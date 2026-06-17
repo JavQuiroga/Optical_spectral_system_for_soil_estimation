@@ -1,0 +1,16 @@
+import time
+from monochromator import Monochromator
+
+m = Monochromator(port="COM4")   # cambia COM si aplica
+
+m.set_filter(2)
+time.sleep(5)
+
+m.set_grating(1)   # si ya le agregaste set_grating
+time.sleep(5)
+
+m.set_wavelength(400)
+time.sleep(5)
+
+m.close()
+print("OK TLS")

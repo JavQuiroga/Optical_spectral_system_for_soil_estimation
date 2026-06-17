@@ -1,0 +1,44 @@
+.mplconfig/
+__pycache__/
+.ipynb_checkpoints/
+.vscode/
+Adqusicion/.git_old_repo_backup/
+
+# Python environments and local installs
+venv/
+.venv/
+env/
+mono/
+mono312/
+Adqusicion/mono312/
+
+# Generated data and model artifacts
+*.npy
+*.npz
+*.pth
+*.pt
+*.h5
+*.hdf5
+*.mat
+*.exe
+
+# Acquisition and reconstruction outputs
+scan_blocks_output/
+Barrido_monocromador/
+Characterize_results/
+Adqusicion/scan_blocks_output/
+Adqusicion/Barrido_monocromador/
+Adqusicion/Characterize_results/
+Spectral_Reconstruction/resultados/
+Spectral_Reconstruction/preparado_cubos_spectralon/
+Spectral_Reconstruction/preparado_muestra/
+Spectral_Reconstruction/preparado_spectralon/
+Spectral_Reconstruction/salida_cubo_dividido_spectralon/
+Spectral_Reconstruction/salida_spectralon_normalizado/
+Spectral_Reconstruction/falso_color/
+Spectral_Reconstruction/falso_color_matlab/
+Spectral_Reconstruction/firmas_colorchecker_reflectancia/
+Spectral_Reconstruction/firmas_colorchecker_reflectancia_matlab/
+Spectral_Reconstruction/firma_extraida_muestra/
+Spectral_Reconstruction/test_reconstruct_from_calibration/
+Spectral_Reconstruction/spectral_characterization_plots/

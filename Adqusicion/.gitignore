@@ -1,0 +1,9 @@
+scan_blocks_output/
+*.npy
+*.pth
+__pycache__/
+.vscode/
+mono/
+*.exe
+Barrido_monocromador/
+Characterize_results/
