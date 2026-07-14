@@ -17,7 +17,7 @@ close all;
 % c = espacio horizontal
 %% ============================================================
 
-ruta = 'C:\Users\ASUS\Documents\STSIVA_TESIS\Spectral\Capturas_soil\Soil_989\cube_20260509_085042.npy';
+ruta = 'C:\Users\ASUS\Documents\STSIVA_TESIS\Spectral_Reconstruction\Capturas_soil\Soil_12\cube_20260610_112653.npy';
 
 %% ------------------------------------------------------------
 % 1. Abrir archivo y leer encabezado .npy

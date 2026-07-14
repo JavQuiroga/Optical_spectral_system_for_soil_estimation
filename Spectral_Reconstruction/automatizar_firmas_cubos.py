@@ -13,12 +13,12 @@ El programa:
 Ejemplos:
     python automatizar_firmas_cubos.py --self-test
 
-    python automatizar_firmas_cubos.py ^
-        --input-dir "D:\Capturas_soil" ^
-        --output-dir "D:\Firmas_automaticas" ^
+    python Spectral_Reconstruction\automatizar_firmas_cubos.py ^
+        --input-dir "Spectral_Reconstruction\Capturas_soil" ^
+        --output-dir "Spectral_Reconstruction\Firmas_automaticas" ^
         --layout y_lambda_x ^
         --preview-start 390 ^
-        --preview-stop 679 ^
+        --preview-stop 550 ^
         --limit 20
 
 Los indices siguen la convencion Python: start incluido, stop excluido.
@@ -60,6 +60,7 @@ class Config:
     preview_stop: int | None = 679
     n_subranges: int = 3
     n_clusters: int = 5
+    k_values: tuple[int, ...] = (4, 5, 6, 7, 8)
     sample_pixels: int = 80_000
     random_seed: int = 17
     spatial_smoothing_fraction: float = 0.008
@@ -67,6 +68,12 @@ class Config:
     max_area_fraction: float = 0.45
     border_margin_fraction: float = 0.015
     interior_fraction: float = 0.35
+    circular_roi_radius_fraction: float = 0.22
+    soil_roi_radius_pixels: float = 90.0
+    dark_corner_search_fraction: float = 0.30
+    dark_rectangle_height_fraction: float = 0.08
+    dark_rectangle_width_fraction: float = 0.08
+    dark_corner_margin_fraction: float = 0.01
     min_roi_pixels: int = 30
     reduction: str = "median"
     expected_soil: tuple[float, float] | None = None
@@ -122,6 +129,15 @@ def parse_point(text: str | None) -> tuple[float, float] | None:
     if not (0 <= x <= 1 and 0 <= y <= 1):
         raise argparse.ArgumentTypeError("Las coordenadas x,y deben estar entre 0 y 1.")
     return x, y
+
+
+def parse_int_list(text: str) -> tuple[int, ...]:
+    values = tuple(int(piece.strip()) for piece in text.split(",") if piece.strip())
+    if not values:
+        raise argparse.ArgumentTypeError("Debe indicar al menos un valor de K.")
+    if any(value < 2 for value in values):
+        raise argparse.ArgumentTypeError("Todos los valores de K deben ser >= 2.")
+    return values
 
 
 def load_cube(path: Path, layout: str) -> np.ndarray:
@@ -200,12 +216,12 @@ def build_multiband_features(
     return feature_cube, broadband, (start, stop), ranges
 
 
-def segment_features(features: np.ndarray, config: Config) -> np.ndarray:
+def segment_features(features: np.ndarray, config: Config, n_clusters: int) -> np.ndarray:
     height, width, n_features = features.shape
     flat = features.reshape(-1, n_features)
     valid = np.all(np.isfinite(flat), axis=1)
     valid_indices = np.flatnonzero(valid)
-    if valid_indices.size < config.n_clusters:
+    if valid_indices.size < n_clusters:
         raise ValueError("No hay suficientes pixeles validos para segmentar.")
 
     rng = np.random.default_rng(config.random_seed)
@@ -217,7 +233,7 @@ def segment_features(features: np.ndarray, config: Config) -> np.ndarray:
         training_indices = valid_indices
 
     model = MiniBatchKMeans(
-        n_clusters=config.n_clusters,
+        n_clusters=n_clusters,
         random_state=config.random_seed,
         n_init=5,
         batch_size=4096,
@@ -251,7 +267,8 @@ def extract_candidates(
     candidates: list[Candidate] = []
 
     structure = np.ones((3, 3), dtype=np.uint8)
-    for cluster in range(config.n_clusters):
+    valid_clusters = [int(value) for value in np.unique(labels) if value >= 0]
+    for cluster in valid_clusters:
         cluster_mask = labels == cluster
         cluster_mask = ndimage.binary_opening(cluster_mask, structure=structure)
         cluster_mask = ndimage.binary_closing(cluster_mask, structure=structure)
@@ -327,20 +344,24 @@ def candidate_score(
     position = position_score(candidate, expected, config.max_position_distance)
     border = float(np.clip(1 - 2.5 * candidate.border_fraction, 0, 1))
     compactness = float(np.clip(candidate.fill_fraction / 0.55, 0, 1))
+    bbox_height = max(1, candidate.bbox_y1 - candidate.bbox_y0)
+    bbox_width = max(1, candidate.bbox_x1 - candidate.bbox_x0)
+    roundness = min(bbox_height, bbox_width) / max(bbox_height, bbox_width)
     area_score = float(
         np.clip(candidate.area_fraction / max(config.min_area_fraction * 8, 1e-9), 0, 1)
     )
 
     return (
-        0.48 * intensity_score
-        + 0.20 * position
-        + 0.14 * border
-        + 0.10 * compactness
+        0.34 * intensity_score
+        + 0.16 * position
+        + 0.12 * border
+        + 0.12 * compactness
+        + 0.18 * roundness
         + 0.08 * area_score
     )
 
 
-def assign_roles(
+def assign_foreground_roles(
     candidates: list[Candidate], config: Config
 ) -> tuple[dict[str, Candidate], dict[str, float]]:
     brightness = np.array([candidate.brightness for candidate in candidates])
@@ -350,7 +371,6 @@ def assign_roles(
     expected_by_role = {
         "soil": config.expected_soil,
         "white": config.expected_white,
-        "dark": config.expected_dark,
     }
 
     best_total = -np.inf
@@ -362,64 +382,185 @@ def assign_roles(
         for white in limited:
             if white is soil:
                 continue
-            for dark in limited:
-                if dark is soil or dark is white:
-                    continue
-                assignment = {"soil": soil, "white": white, "dark": dark}
-                if not (white.brightness > soil.brightness > dark.brightness):
-                    continue
+            assignment = {"soil": soil, "white": white}
+            if not white.brightness > soil.brightness:
+                continue
 
-                scores = {
-                    role: candidate_score(
-                        candidate,
-                        role,
-                        rank_by_id[id(candidate)],
-                        expected_by_role[role],
-                        config,
-                    )
-                    for role, candidate in assignment.items()
-                }
-                separation = min(
-                    white.brightness - soil.brightness,
-                    soil.brightness - dark.brightness,
+            scores = {
+                role: candidate_score(
+                    candidate,
+                    role,
+                    rank_by_id[id(candidate)],
+                    expected_by_role[role],
+                    config,
                 )
-                total = sum(scores.values()) + 0.35 * float(np.clip(separation / 0.15, 0, 1))
-                if total > best_total:
-                    best_total = total
-                    best_assignment = assignment
-                    best_scores = scores
+                for role, candidate in assignment.items()
+            }
+            separation = white.brightness - soil.brightness
+            total = sum(scores.values()) + 0.35 * float(np.clip(separation / 0.15, 0, 1))
+            if total > best_total:
+                best_total = total
+                best_assignment = assignment
+                best_scores = scores
 
     if best_assignment is None or best_scores is None:
-        raise ValueError("No se encontro una asignacion WHITE > SOIL > DARK coherente.")
+        raise ValueError("No se encontro una asignacion WHITE > SOIL coherente.")
     return best_assignment, best_scores
 
 
-def make_interior_mask(candidate: Candidate, config: Config) -> np.ndarray:
-    mask = candidate.mask
-    if candidate.fill_fraction < 0.48:
-        cy = (candidate.bbox_y0 + candidate.bbox_y1 - 1) / 2
-        cx = (candidate.bbox_x0 + candidate.bbox_x1 - 1) / 2
-        ry = max((candidate.bbox_y1 - candidate.bbox_y0) * 0.24, 1)
-        rx = max((candidate.bbox_x1 - candidate.bbox_x0) * 0.24, 1)
-        yy, xx = np.indices(mask.shape)
-        ellipse = ((yy - cy) / ry) ** 2 + ((xx - cx) / rx) ** 2 <= 1
-        if np.count_nonzero(ellipse) >= config.min_roi_pixels:
-            return ellipse
+def make_circular_mask(candidate: Candidate, config: Config, role: str) -> np.ndarray:
+    height, width = candidate.mask.shape
+    center_y = (candidate.bbox_y0 + candidate.bbox_y1 - 1) / 2
+    center_x = (candidate.bbox_x0 + candidate.bbox_x1 - 1) / 2
+    object_height = candidate.bbox_y1 - candidate.bbox_y0
+    object_width = candidate.bbox_x1 - candidate.bbox_x0
+    if role == "soil":
+        radius = float(config.soil_roi_radius_pixels)
+    else:
+        radius = max(
+            2.0,
+            min(object_height, object_width) * config.circular_roi_radius_fraction,
+        )
+    yy, xx = np.indices((height, width))
+    circle = (yy - center_y) ** 2 + (xx - center_x) ** 2 <= radius**2
+    if np.count_nonzero(circle) < config.min_roi_pixels:
+        raise ValueError("La ROI circular resulto demasiado pequena.")
+    return circle
 
-    distance = ndimage.distance_transform_edt(mask)
-    max_distance = float(np.max(distance))
-    if max_distance <= 0:
-        return mask.copy()
 
-    threshold = max_distance * config.interior_fraction
-    interior = distance >= threshold
-    if np.count_nonzero(interior) < config.min_roi_pixels:
-        target = min(config.min_roi_pixels, np.count_nonzero(mask))
-        values = distance[mask]
-        if values.size:
-            threshold = float(np.partition(values, max(0, values.size - target))[max(0, values.size - target)])
-            interior = mask & (distance >= threshold)
-    return interior
+def select_dark_corner_rectangle(
+    broadband: np.ndarray, config: Config
+) -> tuple[np.ndarray, dict[str, int | float | str], float]:
+    height, width = broadband.shape
+    rect_h = max(3, int(round(height * config.dark_rectangle_height_fraction)))
+    rect_w = max(3, int(round(width * config.dark_rectangle_width_fraction)))
+    search_h = max(rect_h, int(round(height * config.dark_corner_search_fraction)))
+    search_w = max(rect_w, int(round(width * config.dark_corner_search_fraction)))
+    margin_y = int(round(height * config.dark_corner_margin_fraction))
+    margin_x = int(round(width * config.dark_corner_margin_fraction))
+    step_y = max(1, rect_h // 3)
+    step_x = max(1, rect_w // 3)
+
+    corners = {
+        "top_left": (margin_y, min(height, margin_y + search_h), margin_x, min(width, margin_x + search_w)),
+        "top_right": (margin_y, min(height, margin_y + search_h), max(0, width - margin_x - search_w), width - margin_x),
+        "bottom_left": (max(0, height - margin_y - search_h), height - margin_y, margin_x, min(width, margin_x + search_w)),
+        "bottom_right": (
+            max(0, height - margin_y - search_h),
+            height - margin_y,
+            max(0, width - margin_x - search_w),
+            width - margin_x,
+        ),
+    }
+
+    best: tuple[float, str, int, int] | None = None
+    for corner_name, (y0, y1, x0, x1) in corners.items():
+        y_starts = list(range(y0, max(y0 + 1, y1 - rect_h + 1), step_y))
+        x_starts = list(range(x0, max(x0 + 1, x1 - rect_w + 1), step_x))
+        if y1 - rect_h >= y0:
+            y_starts.append(y1 - rect_h)
+        if x1 - rect_w >= x0:
+            x_starts.append(x1 - rect_w)
+
+        for rect_y0 in sorted(set(y_starts)):
+            for rect_x0 in sorted(set(x_starts)):
+                patch = broadband[rect_y0 : rect_y0 + rect_h, rect_x0 : rect_x0 + rect_w]
+                if patch.shape != (rect_h, rect_w):
+                    continue
+                darkness = float(np.nanmedian(patch))
+                texture_penalty = float(np.nanstd(patch)) * 0.20
+                objective = darkness + texture_penalty
+                if best is None or objective < best[0]:
+                    best = (objective, corner_name, rect_y0, rect_x0)
+
+    if best is None:
+        raise ValueError("No fue posible ubicar la ROI rectangular DARK.")
+
+    objective, corner_name, y0, x0 = best
+    mask = np.zeros_like(broadband, dtype=bool)
+    mask[y0 : y0 + rect_h, x0 : x0 + rect_w] = True
+    brightness = float(np.nanmedian(broadband[mask]))
+    score = float(np.clip(1 - brightness, 0, 1))
+    metadata = {
+        "corner": corner_name,
+        "y0": int(y0),
+        "y1": int(y0 + rect_h),
+        "x0": int(x0),
+        "x1": int(x0 + rect_w),
+        "brightness": brightness,
+        "objective": float(objective),
+    }
+    return mask, metadata, score
+
+
+def segmentation_quality(
+    assignment: dict[str, Candidate], role_scores: dict[str, float]
+) -> float:
+    soil = assignment["soil"]
+    white = assignment["white"]
+
+    brightness_gap = max(0.0, white.brightness - soil.brightness)
+    soil_shape = 0.5 * soil.fill_fraction + 0.5 * (
+        min(soil.bbox_y1 - soil.bbox_y0, soil.bbox_x1 - soil.bbox_x0)
+        / max(soil.bbox_y1 - soil.bbox_y0, soil.bbox_x1 - soil.bbox_x0, 1)
+    )
+    white_shape = 0.5 * white.fill_fraction + 0.5 * (
+        min(white.bbox_y1 - white.bbox_y0, white.bbox_x1 - white.bbox_x0)
+        / max(white.bbox_y1 - white.bbox_y0, white.bbox_x1 - white.bbox_x0, 1)
+    )
+    border_penalty = soil.border_fraction + white.border_fraction
+    area_balance = min(soil.area, white.area) / max(max(soil.area, white.area), 1)
+
+    return float(
+        0.40 * min(role_scores.values())
+        + 0.20 * np.clip(brightness_gap / 0.25, 0, 1)
+        + 0.18 * np.clip(soil_shape, 0, 1)
+        + 0.14 * np.clip(white_shape, 0, 1)
+        + 0.08 * np.clip(area_balance / 0.15, 0, 1)
+        - 0.18 * border_penalty
+    )
+
+
+def choose_best_segmentation(
+    features: np.ndarray, broadband: np.ndarray, config: Config
+) -> tuple[np.ndarray, list[Candidate], dict[str, Candidate], dict[str, float], dict[str, object]]:
+    attempts: list[dict[str, object]] = []
+    best: tuple[int, float, np.ndarray, list[Candidate], dict[str, Candidate], dict[str, float]] | None = None
+
+    for k in config.k_values:
+        try:
+            labels = segment_features(features, config, n_clusters=k)
+            candidates = extract_candidates(labels, broadband, config)
+            assignment, role_scores = assign_foreground_roles(candidates, config)
+            quality = segmentation_quality(assignment, role_scores)
+            attempts.append(
+                {
+                    "k": int(k),
+                    "status": "ok",
+                    "quality": quality,
+                    "num_candidates": len(candidates),
+                    "role_scores": role_scores,
+                    "soil_area": int(assignment["soil"].area),
+                    "white_area": int(assignment["white"].area),
+                    "soil_brightness": float(assignment["soil"].brightness),
+                    "white_brightness": float(assignment["white"].brightness),
+                }
+            )
+            if best is None or quality > best[1]:
+                best = (int(k), quality, labels, candidates, assignment, role_scores)
+        except Exception as exc:
+            attempts.append({"k": int(k), "status": "error", "error": str(exc)})
+
+    if best is None:
+        raise ValueError("Ningun valor de K produjo una segmentacion usable.")
+
+    selected_k, quality, labels, candidates, assignment, role_scores = best
+    diagnostics = {
+        "selected_k": selected_k,
+        "selected_quality": quality,
+        "attempts": attempts,
+    }
+    return labels, candidates, assignment, role_scores, diagnostics
 
 
 def signature_from_mask(
@@ -521,25 +662,21 @@ def save_diagnostic(
     plt.close(figure)
 
 
-def process_cube(
-    path: Path,
-    input_dir: Path,
-    output_dir: Path,
+def evaluate_masks_and_signatures(
+    cube: np.ndarray,
+    broadband: np.ndarray,
+    assignment: dict[str, Candidate],
+    role_scores: dict[str, float],
     config: Config,
-) -> CubeResult:
-    cube_id = cube_identifier(path, input_dir)
-    cube_out = output_dir / "cubos" / cube_id
-    cube_out.mkdir(parents=True, exist_ok=True)
-
-    cube = load_cube(path, config.layout)
-    features, broadband, preview_range, subranges = build_multiband_features(cube, config)
-    labels = segment_features(features, config)
-    candidates = extract_candidates(labels, broadband, config)
-    assignment, role_scores = assign_roles(candidates, config)
+) -> dict[str, object]:
     masks = {
-        role: make_interior_mask(candidate, config)
-        for role, candidate in assignment.items()
+        "soil": make_circular_mask(assignment["soil"], config, "soil"),
+        "white": make_circular_mask(assignment["white"], config, "white"),
     }
+    role_scores = dict(role_scores)
+    masks["dark"], dark_rectangle, role_scores["dark"] = select_dark_corner_rectangle(
+        broadband, config
+    )
 
     signatures = {
         role: signature_from_mask(cube, masks[role], config.reduction)
@@ -569,7 +706,222 @@ def process_cube(
     if roi_balance < 0.02:
         reasons.append("roi_muy_pequena_frente_a_otras")
     status = "review" if reasons else "ok"
-    reason = ";".join(reasons)
+
+    return {
+        "masks": masks,
+        "signatures": signatures,
+        "reflectance": reflectance,
+        "valid": valid,
+        "roi_sizes": roi_sizes,
+        "invalid_fraction": invalid_fraction,
+        "outside_fraction": outside_fraction,
+        "confidence": confidence,
+        "status": status,
+        "reason": ";".join(reasons),
+        "dark_rectangle": dark_rectangle,
+        "role_scores": role_scores,
+    }
+
+
+def save_k_result(
+    out_dir: Path,
+    cube: np.ndarray,
+    features: np.ndarray,
+    broadband: np.ndarray,
+    labels: np.ndarray,
+    assignment: dict[str, Candidate],
+    role_scores: dict[str, float],
+    quality: float,
+    k: int,
+    preview_range: tuple[int, int],
+    subranges: list[tuple[int, int]],
+    config: Config,
+) -> dict[str, object]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    evaluated = evaluate_masks_and_signatures(
+        cube, broadband, assignment, dict(role_scores), config
+    )
+    masks = evaluated["masks"]
+    signatures = evaluated["signatures"]
+    reflectance = evaluated["reflectance"]
+
+    np.savez_compressed(
+        out_dir / f"resultado_k_{k:02d}.npz",
+        soil_signature=signatures["soil"],
+        white_signature=signatures["white"],
+        dark_signature=signatures["dark"],
+        soil_reflectance=reflectance,
+        soil_mask=masks["soil"],
+        white_mask=masks["white"],
+        dark_mask=masks["dark"],
+        labels=labels,
+        preview=broadband,
+        preview_range=np.array(preview_range),
+        preview_subranges=np.array(subranges),
+        k=np.array([k], dtype=np.int32),
+    )
+
+    metadata = {
+        "k": int(k),
+        "quality": float(quality),
+        "role_scores": evaluated["role_scores"],
+        "selected_components": {
+            role: {
+                key: value
+                for key, value in asdict(candidate).items()
+                if key != "mask"
+            }
+            for role, candidate in assignment.items()
+        },
+        "dark_rectangle": evaluated["dark_rectangle"],
+        "confidence": evaluated["confidence"],
+        "status": evaluated["status"],
+        "reason": evaluated["reason"],
+        "roi_sizes": evaluated["roi_sizes"],
+        "invalid_reflectance_fraction": evaluated["invalid_fraction"],
+        "reflectance_outside_fraction": evaluated["outside_fraction"],
+        "preview_range_start_inclusive_stop_exclusive": list(preview_range),
+        "preview_subranges": subranges,
+        "soil_roi_radius_pixels": config.soil_roi_radius_pixels,
+    }
+    (out_dir / f"metadata_k_{k:02d}.json").write_text(
+        json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+    save_diagnostic(
+        out_dir / f"diagnostico_k_{k:02d}.png",
+        features,
+        broadband,
+        labels,
+        masks,
+        reflectance,
+        float(evaluated["confidence"]),
+        str(evaluated["status"]),
+    )
+    return {
+        "k": int(k),
+        "quality": float(quality),
+        "status": evaluated["status"],
+        "reason": evaluated["reason"],
+        "confidence": evaluated["confidence"],
+        "invalid_fraction": evaluated["invalid_fraction"],
+        "outside_fraction": evaluated["outside_fraction"],
+        "reflectance": reflectance,
+        "metadata": metadata,
+        "out_dir": str(out_dir),
+    }
+
+
+def save_all_k_results(
+    cube_out: Path,
+    cube: np.ndarray,
+    features: np.ndarray,
+    broadband: np.ndarray,
+    preview_range: tuple[int, int],
+    subranges: list[tuple[int, int]],
+    config: Config,
+) -> list[dict[str, object]]:
+    results: list[dict[str, object]] = []
+    per_k_dir = cube_out / "por_k"
+
+    for k in config.k_values:
+        out_dir = per_k_dir / f"k_{k:02d}"
+        try:
+            labels = segment_features(features, config, n_clusters=k)
+            candidates = extract_candidates(labels, broadband, config)
+            assignment, role_scores = assign_foreground_roles(candidates, config)
+            quality = segmentation_quality(assignment, role_scores)
+            result = save_k_result(
+                out_dir,
+                cube,
+                features,
+                broadband,
+                labels,
+                assignment,
+                role_scores,
+                quality,
+                int(k),
+                preview_range,
+                subranges,
+                config,
+            )
+            results.append(result)
+        except Exception as exc:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            error_metadata = {"k": int(k), "status": "error", "error": str(exc)}
+            (out_dir / f"metadata_k_{k:02d}.json").write_text(
+                json.dumps(error_metadata, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            results.append(error_metadata)
+
+    save_reflectance_by_k_plot(cube_out / "firmas_reflectancia_por_k.png", results)
+    return results
+
+
+def save_reflectance_by_k_plot(path: Path, k_results: list[dict[str, object]]) -> None:
+    fig, ax = plt.subplots(figsize=(11, 6))
+    plotted = False
+    for result in k_results:
+        if result.get("status") == "error" or "reflectance" not in result:
+            continue
+        reflectance = np.asarray(result["reflectance"], dtype=np.float32)
+        label = f"K={result['k']} | {result.get('status')} | invalid={float(result.get('invalid_fraction', 0)):.1%}"
+        ax.plot(reflectance, linewidth=1.2, label=label)
+        plotted = True
+
+    ax.axhline(0, color="black", linewidth=0.7)
+    ax.axhline(1, color="gray", linewidth=0.7, linestyle="--")
+    ax.set_xlabel("Indice de banda")
+    ax.set_ylabel("Reflectancia relativa")
+    ax.set_title("Firmas de reflectancia SOIL por K")
+    ax.grid(True, alpha=0.3)
+    if plotted:
+        ax.legend(loc="best", fontsize=8)
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+
+
+def process_cube(
+    path: Path,
+    input_dir: Path,
+    output_dir: Path,
+    config: Config,
+) -> CubeResult:
+    cube_id = cube_identifier(path, input_dir)
+    cube_out = output_dir / "cubos" / cube_id
+    cube_out.mkdir(parents=True, exist_ok=True)
+
+    cube = load_cube(path, config.layout)
+    features, broadband, preview_range, subranges = build_multiband_features(cube, config)
+    labels, candidates, assignment, role_scores, segmentation_diagnostics = choose_best_segmentation(
+        features, broadband, config
+    )
+    evaluated = evaluate_masks_and_signatures(
+        cube, broadband, assignment, dict(role_scores), config
+    )
+    role_scores = evaluated["role_scores"]
+    masks = evaluated["masks"]
+    signatures = evaluated["signatures"]
+    reflectance = evaluated["reflectance"]
+    roi_sizes = evaluated["roi_sizes"]
+    invalid_fraction = float(evaluated["invalid_fraction"])
+    outside_fraction = float(evaluated["outside_fraction"])
+    confidence = float(evaluated["confidence"])
+    status = str(evaluated["status"])
+    reason = str(evaluated["reason"])
+    dark_rectangle = evaluated["dark_rectangle"]
+
+    per_k_results = save_all_k_results(
+        cube_out,
+        cube,
+        features,
+        broadband,
+        preview_range,
+        subranges,
+        config,
+    )
 
     np.savez_compressed(
         cube_out / "resultado.npz",
@@ -591,6 +943,15 @@ def process_cube(
         "cube_shape_y_x_lambda": [int(value) for value in cube.shape],
         "preview_range_start_inclusive_stop_exclusive": list(preview_range),
         "preview_subranges": subranges,
+        "segmentation": segmentation_diagnostics,
+        "per_k_results": [
+            {
+                key: value
+                for key, value in result.items()
+                if key not in {"reflectance", "metadata"}
+            }
+            for result in per_k_results
+        ],
         "role_scores": role_scores,
         "selected_components": {
             role: {
@@ -600,6 +961,7 @@ def process_cube(
             }
             for role, candidate in assignment.items()
         },
+        "dark_rectangle": dark_rectangle,
         "confidence": confidence,
         "status": status,
         "reason": reason,
@@ -716,6 +1078,7 @@ def run_self_test(output_dir: Path) -> int:
         preview_start=10,
         preview_stop=110,
         min_area_fraction=0.002,
+        soil_roi_radius_pixels=32.0,
         expected_soil=(0.50, 0.53),
         expected_white=(0.21, 0.27),
         expected_dark=(0.81, 0.27),
@@ -744,9 +1107,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--preview-start", type=int, default=390)
     parser.add_argument("--preview-stop", type=int, default=679)
-    parser.add_argument("--clusters", type=int, default=5)
+    parser.add_argument(
+        "--clusters",
+        type=int,
+        help="Fuerza un unico K. Si no se usa, se prueban los valores de --k-values.",
+    )
+    parser.add_argument(
+        "--k-values",
+        type=parse_int_list,
+        default=parse_int_list("4,5,6,7,8"),
+        help="Valores de K a probar, separados por coma. Por defecto: 4,5,6,7,8.",
+    )
     parser.add_argument("--limit", type=int)
     parser.add_argument("--reduction", choices=("mean", "median"), default="median")
+    parser.add_argument(
+        "--soil-radius-pixels",
+        type=float,
+        default=90.0,
+        help="Radio fijo, en pixeles, para la ROI circular de SOIL. Por defecto: 90.",
+    )
+    parser.add_argument("--circle-radius-fraction", type=float, default=0.22)
+    parser.add_argument("--dark-search-fraction", type=float, default=0.30)
+    parser.add_argument("--dark-height-fraction", type=float, default=0.08)
+    parser.add_argument("--dark-width-fraction", type=float, default=0.08)
     parser.add_argument("--expected-soil", type=parse_point)
     parser.add_argument("--expected-white", type=parse_point)
     parser.add_argument("--expected-dark", type=parse_point)
@@ -774,8 +1157,14 @@ def main() -> int:
         layout=args.layout,
         preview_start=args.preview_start,
         preview_stop=args.preview_stop,
-        n_clusters=args.clusters,
+        n_clusters=args.clusters if args.clusters is not None else args.k_values[0],
+        k_values=(args.clusters,) if args.clusters is not None else args.k_values,
         reduction=args.reduction,
+        soil_roi_radius_pixels=args.soil_radius_pixels,
+        circular_roi_radius_fraction=args.circle_radius_fraction,
+        dark_corner_search_fraction=args.dark_search_fraction,
+        dark_rectangle_height_fraction=args.dark_height_fraction,
+        dark_rectangle_width_fraction=args.dark_width_fraction,
         expected_soil=args.expected_soil,
         expected_white=args.expected_white,
         expected_dark=args.expected_dark,

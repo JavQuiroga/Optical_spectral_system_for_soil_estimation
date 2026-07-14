@@ -1,0 +1,11 @@
+﻿cube_id,input_path,status,confidence,reason,shape_y,shape_x,bands,soil_pixels,white_pixels,dark_pixels,invalid_reflectance_fraction,reflectance_outside_fraction
+Soil_1__cube_20260617_171738,C:\Users\ASUS\Documents\STSIVA_TESIS\Spectral_Reconstruction\Capturas_soil\Soil_1\cube_20260617_171738.npy,ok,0.8998070062731465,,1024,1004,1280,25436,4646,6560,0.0,0.0
+Soil_12__cube_20260610_112653,C:\Users\ASUS\Documents\STSIVA_TESIS\Spectral_Reconstruction\Capturas_soil\Soil_12\cube_20260610_112653.npy,review,0.8504600861892058,muchas_bandas_invalidas,1024,1181,1280,25445,4088,7708,0.4359375,0.002770083102493075
+Soil_235__cube_20260613_164053,C:\Users\ASUS\Documents\STSIVA_TESIS\Spectral_Reconstruction\Capturas_soil\Soil_235\cube_20260613_164053.npy,ok,0.8630647482014389,,1024,1009,1280,25436,3560,6642,0.0,0.0
+Soil_28__cube_20260609_162026,C:\Users\ASUS\Documents\STSIVA_TESIS\Spectral_Reconstruction\Capturas_soil\Soil_28\cube_20260609_162026.npy,ok,0.896312343470483,,1024,1309,1280,24436,4349,8610,0.010156249999999978,0.0
+Soil_353__cube_20260613_164140,C:\Users\ASUS\Documents\STSIVA_TESIS\Spectral_Reconstruction\Capturas_soil\Soil_353\cube_20260613_164140.npy,ok,0.869970066518847,,1024,995,1280,25436,3457,6560,0.0,0.0
+Soil_36__cube_20260610_112539,C:\Users\ASUS\Documents\STSIVA_TESIS\Spectral_Reconstruction\Capturas_soil\Soil_36\cube_20260610_112539.npy,ok,0.9144615384615384,,1024,1246,1280,25448,4041,8200,0.0,0.0
+Soil_56__cube_20260610_104908,C:\Users\ASUS\Documents\STSIVA_TESIS\Spectral_Reconstruction\Capturas_soil\Soil_56\cube_20260610_104908.npy,review,0.9346358381502891,muchas_bandas_invalidas,1024,1323,1280,25436,4092,8692,0.45546875,0.0
+Soil_592__cube_20260620_104043,C:\Users\ASUS\Documents\STSIVA_TESIS\Spectral_Reconstruction\Capturas_soil\Soil_592\cube_20260620_104043.npy,ok,0.8177662337662337,,1024,1096,1280,25448,5417,7216,0.0,0.0
+Soil_610__cube_20260620_104150,C:\Users\ASUS\Documents\STSIVA_TESIS\Spectral_Reconstruction\Capturas_soil\Soil_610\cube_20260620_104150.npy,ok,0.8634454382826476,,1024,1196,1280,25448,4384,7872,0.0,0.0
+Soil_96__cube_20260610_105107,C:\Users\ASUS\Documents\STSIVA_TESIS\Spectral_Reconstruction\Capturas_soil\Soil_96\cube_20260610_105107.npy,review,0.8120886850152905,muchas_bandas_invalidas,1024,1264,1280,25436,4088,8282,0.44296875,0.005610098176718092

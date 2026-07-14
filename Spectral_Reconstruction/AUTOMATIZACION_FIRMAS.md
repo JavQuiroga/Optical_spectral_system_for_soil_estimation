@@ -3,6 +3,13 @@
 El script `automatizar_firmas_cubos.py` procesa recursivamente cubos `.npy` y
 extrae las firmas de `SOIL`, `WHITE` y `DARK` sin selección manual.
 
+Las ROIs finales tienen geometría estable:
+
+- `SOIL`: círculo interior al objeto detectado.
+- `WHITE`: círculo interior al objeto detectado.
+- `DARK`: rectángulo pequeño ubicado automáticamente en la zona más oscura
+  de las cuatro esquinas.
+
 ## 1. Probar el algoritmo
 
 Desde `Spectral_Reconstruction`:
@@ -25,6 +32,7 @@ python .\automatizar_firmas_cubos.py `
   --layout y_lambda_x `
   --preview-start 390 `
   --preview-stop 679 `
+  --k-values 4,5,6,7,8 `
   --limit 20
 ```
 
@@ -49,7 +57,61 @@ coordenadas rígidas:
 --expected-dark 0.75,0.30
 ```
 
-## 4. Revisar resultados
+La posición esperada de `DARK` ya no es necesaria porque se busca
+automáticamente en las esquinas.
+
+## 4. Ajustar el tamaño de las ROIs
+
+```powershell
+--circle-radius-fraction 0.22 `
+--soil-radius-pixels 90 `
+--dark-search-fraction 0.30 `
+--dark-height-fraction 0.08 `
+--dark-width-fraction 0.08
+```
+
+Las fracciones se expresan respecto al tamaño del objeto o de la imagen. Por
+ejemplo, el rectángulo oscuro tendrá por defecto una altura y anchura cercanas
+al 8 % de la imagen. La ROI de `SOIL` usa un radio fijo en píxeles, indicado
+por `--soil-radius-pixels`.
+
+## 5. Ajustar la segmentación
+
+Por defecto el script ya no usa un único `K`. Prueba varias segmentaciones y
+elige la que produce objetos más compactos y coherentes para `SOIL` y `WHITE`:
+
+```powershell
+--k-values 4,5,6,7,8
+```
+
+Para comparar con un único valor fijo:
+
+```powershell
+--clusters 6
+```
+
+En cada `metadata.json` queda guardado qué valores de `K` se probaron y cuál
+fue seleccionado.
+
+Además, para cada cubo se guardan resultados separados por K:
+
+```text
+cubos/Soil_X__cube_.../
+├── resultado.npz
+├── metadata.json
+├── firmas_reflectancia_por_k.png
+└── por_k/
+    ├── k_04/
+    ├── k_05/
+    ├── k_06/
+    ├── k_07/
+    └── k_08/
+```
+
+Cada carpeta `k_XX` incluye su `resultado_k_XX.npz`, `metadata_k_XX.json`,
+diagnóstico de segmentación y gráfica de reflectancia.
+
+## 6. Revisar resultados
 
 Cada cubo produce:
 

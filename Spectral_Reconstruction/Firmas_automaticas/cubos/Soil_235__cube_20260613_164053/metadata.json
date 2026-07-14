@@ -1,0 +1,241 @@
+{
+  "cube_id": "Soil_235__cube_20260613_164053",
+  "input_path": "C:\\Users\\ASUS\\Documents\\STSIVA_TESIS\\Spectral_Reconstruction\\Capturas_soil\\Soil_235\\cube_20260613_164053.npy",
+  "cube_shape_y_x_lambda": [
+    1024,
+    1009,
+    1280
+  ],
+  "preview_range_start_inclusive_stop_exclusive": [
+    390,
+    550
+  ],
+  "preview_subranges": [
+    [
+      390,
+      443
+    ],
+    [
+      443,
+      496
+    ],
+    [
+      496,
+      550
+    ]
+  ],
+  "segmentation": {
+    "selected_k": 6,
+    "selected_quality": 0.8740004799647577,
+    "attempts": [
+      {
+        "k": 4,
+        "status": "ok",
+        "quality": 0.8557772108449356,
+        "num_candidates": 4,
+        "role_scores": {
+          "soil": 0.821834890965732,
+          "white": 0.8492631578947368
+        },
+        "soil_area": 144061,
+        "white_area": 38032,
+        "soil_brightness": 0.5263158082962036,
+        "white_brightness": 0.9473684430122375
+      },
+      {
+        "k": 5,
+        "status": "ok",
+        "quality": 0.7706506735498313,
+        "num_candidates": 8,
+        "role_scores": {
+          "soil": 0.8073288756332925,
+          "white": 0.8500625
+        },
+        "soil_area": 316704,
+        "white_area": 37576,
+        "soil_brightness": 0.31578946113586426,
+        "white_brightness": 0.9473684430122375
+      },
+      {
+        "k": 6,
+        "status": "ok",
+        "quality": 0.8740004799647577,
+        "num_candidates": 12,
+        "role_scores": {
+          "soil": 0.9017622377622377,
+          "white": 0.8630647482014389
+        },
+        "soil_area": 142197,
+        "white_area": 31418,
+        "soil_brightness": 0.5263158082962036,
+        "white_brightness": 0.9473684430122375
+      },
+      {
+        "k": 7,
+        "status": "ok",
+        "quality": 0.8254027045972349,
+        "num_candidates": 14,
+        "role_scores": {
+          "soil": 0.8758772419290554,
+          "white": 0.8484099378881987
+        },
+        "soil_area": 15986,
+        "white_area": 37389,
+        "soil_brightness": 0.42105263471603394,
+        "white_brightness": 0.9473684430122375
+      },
+      {
+        "k": 8,
+        "status": "ok",
+        "quality": 0.8272772161272398,
+        "num_candidates": 15,
+        "role_scores": {
+          "soil": 0.8327790763620718,
+          "white": 0.8898800315706392
+        },
+        "soil_area": 71416,
+        "white_area": 16949,
+        "soil_brightness": 0.42105263471603394,
+        "white_brightness": 0.7368420958518982
+      }
+    ]
+  },
+  "per_k_results": [
+    {
+      "k": 4,
+      "quality": 0.8557772108449356,
+      "status": "ok",
+      "reason": "",
+      "confidence": 0.821834890965732,
+      "invalid_fraction": 0.0,
+      "outside_fraction": 0.0,
+      "out_dir": "C:\\Users\\ASUS\\Documents\\STSIVA_TESIS\\Spectral_Reconstruction\\Firmas_automaticas\\cubos\\Soil_235__cube_20260613_164053\\por_k\\k_04"
+    },
+    {
+      "k": 5,
+      "quality": 0.7706506735498313,
+      "status": "ok",
+      "reason": "",
+      "confidence": 0.8073288756332925,
+      "invalid_fraction": 0.0,
+      "outside_fraction": 0.0,
+      "out_dir": "C:\\Users\\ASUS\\Documents\\STSIVA_TESIS\\Spectral_Reconstruction\\Firmas_automaticas\\cubos\\Soil_235__cube_20260613_164053\\por_k\\k_05"
+    },
+    {
+      "k": 6,
+      "quality": 0.8740004799647577,
+      "status": "ok",
+      "reason": "",
+      "confidence": 0.8630647482014389,
+      "invalid_fraction": 0.0,
+      "outside_fraction": 0.0,
+      "out_dir": "C:\\Users\\ASUS\\Documents\\STSIVA_TESIS\\Spectral_Reconstruction\\Firmas_automaticas\\cubos\\Soil_235__cube_20260613_164053\\por_k\\k_06"
+    },
+    {
+      "k": 7,
+      "quality": 0.8254027045972349,
+      "status": "ok",
+      "reason": "",
+      "confidence": 0.8484099378881987,
+      "invalid_fraction": 0.0,
+      "outside_fraction": 0.0390625,
+      "out_dir": "C:\\Users\\ASUS\\Documents\\STSIVA_TESIS\\Spectral_Reconstruction\\Firmas_automaticas\\cubos\\Soil_235__cube_20260613_164053\\por_k\\k_07"
+    },
+    {
+      "k": 8,
+      "quality": 0.8272772161272398,
+      "status": "ok",
+      "reason": "",
+      "confidence": 0.8327790763620718,
+      "invalid_fraction": 0.0,
+      "outside_fraction": 0.021875,
+      "out_dir": "C:\\Users\\ASUS\\Documents\\STSIVA_TESIS\\Spectral_Reconstruction\\Firmas_automaticas\\cubos\\Soil_235__cube_20260613_164053\\por_k\\k_08"
+    }
+  ],
+  "role_scores": {
+    "soil": 0.9017622377622377,
+    "white": 0.8630647482014389,
+    "dark": 1.0
+  },
+  "selected_components": {
+    "soil": {
+      "cluster": 2,
+      "component": 1,
+      "area": 142197,
+      "area_fraction": 0.1376256271679881,
+      "centroid_y": 0.6172189998880231,
+      "centroid_x": 0.41783749372517065,
+      "brightness": 0.5263158082962036,
+      "border_fraction": 0.0,
+      "fill_fraction": 0.8245311902028319,
+      "bbox_y0": 432,
+      "bbox_y1": 834,
+      "bbox_x0": 209,
+      "bbox_x1": 638
+    },
+    "white": {
+      "cluster": 0,
+      "component": 1,
+      "area": 31418,
+      "area_fraction": 0.030407968904856295,
+      "centroid_y": 0.5810418556409657,
+      "centroid_x": 0.7444357862291053,
+      "brightness": 0.9473684430122375,
+      "border_fraction": 0.0,
+      "fill_fraction": 0.7386561339163963,
+      "bbox_y0": 472,
+      "bbox_y1": 750,
+      "bbox_x0": 676,
+      "bbox_x1": 829
+    }
+  },
+  "dark_rectangle": {
+    "corner": "top_left",
+    "y0": 10,
+    "y1": 92,
+    "x0": 10,
+    "x1": 91,
+    "brightness": 0.0,
+    "objective": 0.0
+  },
+  "confidence": 0.8630647482014389,
+  "status": "ok",
+  "reason": "",
+  "invalid_reflectance_fraction": 0.0,
+  "reflectance_outside_fraction": 0.0,
+  "config": {
+    "layout": "y_lambda_x",
+    "preview_start": 390,
+    "preview_stop": 550,
+    "n_subranges": 3,
+    "n_clusters": 4,
+    "k_values": [
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "sample_pixels": 80000,
+    "random_seed": 17,
+    "spatial_smoothing_fraction": 0.008,
+    "min_area_fraction": 0.0008,
+    "max_area_fraction": 0.45,
+    "border_margin_fraction": 0.015,
+    "interior_fraction": 0.35,
+    "circular_roi_radius_fraction": 0.22,
+    "soil_roi_radius_pixels": 90.0,
+    "dark_corner_search_fraction": 0.3,
+    "dark_rectangle_height_fraction": 0.08,
+    "dark_rectangle_width_fraction": 0.08,
+    "dark_corner_margin_fraction": 0.01,
+    "min_roi_pixels": 30,
+    "reduction": "median",
+    "expected_soil": null,
+    "expected_white": null,
+    "expected_dark": null,
+    "max_position_distance": 0.55,
+    "min_confidence": 0.42,
+    "max_invalid_reflectance_fraction": 0.2
+  }
+}

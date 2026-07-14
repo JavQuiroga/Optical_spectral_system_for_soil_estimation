@@ -1,0 +1,17 @@
+{
+    "cube_file": "D:\\JavierSTSIVA\\Soil_36\\cube_20260610_112539.npy",
+    "shape": [
+        1024,
+        1280,
+        1246
+    ],
+    "dtype": "uint8",
+    "n_frames": 1246,
+    "height": 1024,
+    "width": 1280,
+    "exposure_time_us": 4000,
+    "elapsed_s": 17.171321630477905,
+    "fps_average": 72.56284791663539,
+    "axis_order": "Y, X, Z",
+    "stop_key": "q"
+}

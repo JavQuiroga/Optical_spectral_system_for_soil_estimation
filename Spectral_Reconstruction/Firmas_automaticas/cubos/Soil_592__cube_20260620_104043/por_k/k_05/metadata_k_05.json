@@ -1,0 +1,79 @@
+{
+  "k": 5,
+  "quality": 0.8228596889090877,
+  "role_scores": {
+    "soil": 0.9027730061349694,
+    "white": 0.8814786430721826,
+    "dark": 1.0
+  },
+  "selected_components": {
+    "soil": {
+      "cluster": 3,
+      "component": 1,
+      "area": 142832,
+      "area_fraction": 0.1272667655109489,
+      "centroid_y": 0.46770374010068194,
+      "centroid_x": 0.4223013798373719,
+      "brightness": 0.5,
+      "border_fraction": 0.0,
+      "fill_fraction": 0.774774481565258,
+      "bbox_y0": 302,
+      "bbox_y1": 679,
+      "bbox_x0": 230,
+      "bbox_x1": 719
+    },
+    "white": {
+      "cluster": 4,
+      "component": 2,
+      "area": 4913,
+      "area_fraction": 0.00437760179060219,
+      "centroid_y": 0.44739205081417643,
+      "centroid_x": 0.5830789063030056,
+      "brightness": 1.0,
+      "border_fraction": 0.0,
+      "fill_fraction": 0.818424121272697,
+      "bbox_y0": 414,
+      "bbox_y1": 501,
+      "bbox_x0": 604,
+      "bbox_x1": 673
+    }
+  },
+  "dark_rectangle": {
+    "corner": "top_left",
+    "y0": 10,
+    "y1": 92,
+    "x0": 11,
+    "x1": 99,
+    "brightness": 0.0,
+    "objective": 0.0
+  },
+  "confidence": 0.8814786430721826,
+  "status": "ok",
+  "reason": "",
+  "roi_sizes": {
+    "soil": 25445,
+    "white": 725,
+    "dark": 7216
+  },
+  "invalid_reflectance_fraction": 0.0,
+  "reflectance_outside_fraction": 0.0,
+  "preview_range_start_inclusive_stop_exclusive": [
+    390,
+    550
+  ],
+  "preview_subranges": [
+    [
+      390,
+      443
+    ],
+    [
+      443,
+      496
+    ],
+    [
+      496,
+      550
+    ]
+  ],
+  "soil_roi_radius_pixels": 90.0
+}
