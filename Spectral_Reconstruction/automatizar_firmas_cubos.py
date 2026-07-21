@@ -58,6 +58,7 @@ class Config:
     layout: str = "y_lambda_x"
     preview_start: int | None = 390
     preview_stop: int | None = 679
+    preview_ranges: tuple[tuple[int, int], ...] | None = None
     n_subranges: int = 3
     n_clusters: int = 5
     k_values: tuple[int, ...] = (4, 5)
@@ -142,6 +143,29 @@ def parse_int_list(text: str) -> tuple[int, ...]:
     return values
 
 
+def parse_range_list(text: str | None) -> tuple[tuple[int, int], ...] | None:
+    if text is None or not text.strip():
+        return None
+    ranges: list[tuple[int, int]] = []
+    for piece in text.split(","):
+        piece = piece.strip()
+        if not piece:
+            continue
+        if ":" not in piece:
+            raise argparse.ArgumentTypeError(
+                "Use rangos con formato inicio:fin, separados por coma. Ej: 250:430,390:550"
+            )
+        start_text, stop_text = piece.split(":", 1)
+        start = int(start_text.strip())
+        stop = int(stop_text.strip())
+        if start >= stop:
+            raise argparse.ArgumentTypeError(f"Rango invalido: {piece}")
+        ranges.append((start, stop))
+    if not ranges:
+        return None
+    return tuple(ranges)
+
+
 def load_cube(path: Path, layout: str) -> np.ndarray:
     cube = np.load(path, mmap_mode="r")
     if cube.ndim != 3:
@@ -175,6 +199,26 @@ def resolve_preview_range(n_bands: int, config: Config) -> tuple[int, int]:
     return start, stop
 
 
+def resolve_all_preview_ranges(n_bands: int, config: Config) -> list[tuple[int, int]]:
+    if not config.preview_ranges:
+        return [resolve_preview_range(n_bands, config)]
+
+    resolved: list[tuple[int, int]] = []
+    for start, stop in config.preview_ranges:
+        if start < 0:
+            start += n_bands
+        if stop < 0:
+            stop += n_bands
+        start = max(0, start)
+        stop = min(n_bands, stop)
+        if start >= stop:
+            raise ValueError(
+                f"Rango de preview invalido {start}:{stop} para un cubo con {n_bands} bandas."
+            )
+        resolved.append((start, stop))
+    return resolved
+
+
 def robust_normalize(image: np.ndarray) -> np.ndarray:
     image = np.asarray(image, dtype=np.float32)
     finite = image[np.isfinite(image)]
@@ -193,29 +237,34 @@ def build_multiband_features(
     cube: np.ndarray, config: Config
 ) -> tuple[np.ndarray, np.ndarray, tuple[int, int], list[tuple[int, int]]]:
     n_bands = cube.shape[2]
-    start, stop = resolve_preview_range(n_bands, config)
-    edges = np.linspace(start, stop, config.n_subranges + 1, dtype=int)
+    preview_ranges = resolve_all_preview_ranges(n_bands, config)
 
     channels: list[np.ndarray] = []
+    raw_previews: list[np.ndarray] = []
     ranges: list[tuple[int, int]] = []
-    for index in range(config.n_subranges):
-        first, last = int(edges[index]), int(edges[index + 1])
-        if first >= last:
-            continue
-        image = np.nanmedian(cube[:, :, first:last], axis=2)
-        normalized = robust_normalize(image)
-        sigma = max(0.0, min(normalized.shape) * config.spatial_smoothing_fraction)
-        if sigma > 0:
-            normalized = ndimage.gaussian_filter(normalized, sigma=sigma)
-        channels.append(robust_normalize(normalized))
-        ranges.append((first, last))
+    for start, stop in preview_ranges:
+        edges = np.linspace(start, stop, config.n_subranges + 1, dtype=int)
+        for index in range(config.n_subranges):
+            first, last = int(edges[index]), int(edges[index + 1])
+            if first >= last:
+                continue
+            image = np.nanmedian(cube[:, :, first:last], axis=2)
+            raw_previews.append(image)
+            normalized = robust_normalize(image)
+            sigma = max(0.0, min(normalized.shape) * config.spatial_smoothing_fraction)
+            if sigma > 0:
+                normalized = ndimage.gaussian_filter(normalized, sigma=sigma)
+            channels.append(robust_normalize(normalized))
+            ranges.append((first, last))
 
     if not channels:
         raise ValueError("No fue posible construir canales para el preview.")
 
     feature_cube = np.stack(channels, axis=2)
-    broadband = robust_normalize(np.nanmedian(cube[:, :, start:stop], axis=2))
-    return feature_cube, broadband, (start, stop), ranges
+    broadband = robust_normalize(np.nanmedian(np.stack(raw_previews, axis=2), axis=2))
+    preview_start = min(start for start, _ in preview_ranges)
+    preview_stop = max(stop for _, stop in preview_ranges)
+    return feature_cube, broadband, (preview_start, preview_stop), ranges
 
 
 def segment_features(features: np.ndarray, config: Config, n_clusters: int) -> np.ndarray:
@@ -1141,6 +1190,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--preview-start", type=int, default=390)
     parser.add_argument("--preview-stop", type=int, default=679)
     parser.add_argument(
+        "--preview-ranges",
+        type=parse_range_list,
+        help=(
+            "Rangos espectrales para construir la segmentacion, separados por coma. "
+            "Ej: 250:430,390:550. Si se usa, reemplaza preview-start/preview-stop para la segmentacion."
+        ),
+    )
+    parser.add_argument(
+        "--n-subranges",
+        type=int,
+        default=3,
+        help="Numero de subrangos por cada rango de preview. Por defecto: 3.",
+    )
+    parser.add_argument(
         "--clusters",
         type=int,
         help="Fuerza un unico K. Si no se usa, se prueban los valores de --k-values.",
@@ -1210,6 +1273,8 @@ def main() -> int:
         layout=args.layout,
         preview_start=args.preview_start,
         preview_stop=args.preview_stop,
+        preview_ranges=args.preview_ranges,
+        n_subranges=args.n_subranges,
         n_clusters=args.clusters if args.clusters is not None else args.k_values[0],
         k_values=(args.clusters,) if args.clusters is not None else args.k_values,
         reduction=args.reduction,
