@@ -60,7 +60,7 @@ class Config:
     preview_stop: int | None = 679
     n_subranges: int = 3
     n_clusters: int = 5
-    k_values: tuple[int, ...] = (4, 5, 6, 7, 8)
+    k_values: tuple[int, ...] = (4, 5)
     sample_pixels: int = 80_000
     random_seed: int = 17
     spatial_smoothing_fraction: float = 0.008
@@ -76,10 +76,12 @@ class Config:
     dark_corner_margin_fraction: float = 0.01
     min_roi_pixels: int = 30
     reduction: str = "median"
-    expected_soil: tuple[float, float] | None = None
+    expected_soil: tuple[float, float] | None = (0.43, 0.55)
     expected_white: tuple[float, float] | None = None
     expected_dark: tuple[float, float] | None = None
     max_position_distance: float = 0.55
+    soil_max_position_distance: float = 0.28
+    min_soil_position_score: float = 0.18
     min_confidence: float = 0.42
     max_invalid_reflectance_fraction: float = 0.20
 
@@ -341,7 +343,10 @@ def candidate_score(
     else:
         intensity_score = 1 - min(abs(brightness_rank - 0.5) * 2, 1)
 
-    position = position_score(candidate, expected, config.max_position_distance)
+    position_distance = (
+        config.soil_max_position_distance if role == "soil" else config.max_position_distance
+    )
+    position = position_score(candidate, expected, position_distance)
     border = float(np.clip(1 - 2.5 * candidate.border_fraction, 0, 1))
     compactness = float(np.clip(candidate.fill_fraction / 0.55, 0, 1))
     bbox_height = max(1, candidate.bbox_y1 - candidate.bbox_y0)
@@ -350,6 +355,22 @@ def candidate_score(
     area_score = float(
         np.clip(candidate.area_fraction / max(config.min_area_fraction * 8, 1e-9), 0, 1)
     )
+
+    if role == "soil":
+        # SOIL debe corresponder al circulo grande de la izquierda/centro.
+        # Por eso aqui la posicion y la forma pesan mas que la intensidad pura:
+        # la intensidad ayuda, pero no debe permitir que la ROI salte a otra zona.
+        large_soil_score = float(
+            np.clip(candidate.area_fraction / max(config.min_area_fraction * 35, 1e-9), 0, 1)
+        )
+        return (
+            0.40 * position
+            + 0.20 * roundness
+            + 0.18 * large_soil_score
+            + 0.10 * intensity_score
+            + 0.08 * compactness
+            + 0.04 * border
+        )
 
     return (
         0.34 * intensity_score
@@ -379,6 +400,12 @@ def assign_foreground_roles(
 
     limited = sorted(candidates, key=lambda item: item.area, reverse=True)[:24]
     for soil in limited:
+        if config.expected_soil is not None:
+            soil_position = position_score(
+                soil, config.expected_soil, config.soil_max_position_distance
+            )
+            if soil_position < config.min_soil_position_score:
+                continue
         for white in limited:
             if white is soil:
                 continue
@@ -410,8 +437,12 @@ def assign_foreground_roles(
 
 def make_circular_mask(candidate: Candidate, config: Config, role: str) -> np.ndarray:
     height, width = candidate.mask.shape
-    center_y = (candidate.bbox_y0 + candidate.bbox_y1 - 1) / 2
-    center_x = (candidate.bbox_x0 + candidate.bbox_x1 - 1) / 2
+    if role == "soil":
+        center_y = candidate.centroid_y * max(height - 1, 1)
+        center_x = candidate.centroid_x * max(width - 1, 1)
+    else:
+        center_y = (candidate.bbox_y0 + candidate.bbox_y1 - 1) / 2
+        center_x = (candidate.bbox_x0 + candidate.bbox_x1 - 1) / 2
     object_height = candidate.bbox_y1 - candidate.bbox_y0
     object_width = candidate.bbox_x1 - candidate.bbox_x0
     if role == "soil":
@@ -544,6 +575,8 @@ def choose_best_segmentation(
                     "white_area": int(assignment["white"].area),
                     "soil_brightness": float(assignment["soil"].brightness),
                     "white_brightness": float(assignment["white"].brightness),
+                    "soil_centroid_x": float(assignment["soil"].centroid_x),
+                    "soil_centroid_y": float(assignment["soil"].centroid_y),
                 }
             )
             if best is None or quality > best[1]:
@@ -1115,8 +1148,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--k-values",
         type=parse_int_list,
-        default=parse_int_list("4,5,6,7,8"),
-        help="Valores de K a probar, separados por coma. Por defecto: 4,5,6,7,8.",
+        default=parse_int_list("4,5"),
+        help="Valores de K a probar, separados por coma. Por defecto: 4,5.",
     )
     parser.add_argument("--limit", type=int)
     parser.add_argument("--reduction", choices=("mean", "median"), default="median")
@@ -1130,9 +1163,29 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dark-search-fraction", type=float, default=0.30)
     parser.add_argument("--dark-height-fraction", type=float, default=0.08)
     parser.add_argument("--dark-width-fraction", type=float, default=0.08)
-    parser.add_argument("--expected-soil", type=parse_point)
+    parser.add_argument(
+        "--expected-soil",
+        type=parse_point,
+        default=parse_point("0.43,0.55"),
+        help=(
+            "Centro esperado de SOIL como x,y normalizado. "
+            "Por defecto 0.43,0.55, cerca del circulo grande izquierdo."
+        ),
+    )
     parser.add_argument("--expected-white", type=parse_point)
     parser.add_argument("--expected-dark", type=parse_point)
+    parser.add_argument(
+        "--soil-max-position-distance",
+        type=float,
+        default=0.28,
+        help="Distancia normalizada maxima para favorecer SOIL alrededor del centro esperado.",
+    )
+    parser.add_argument(
+        "--min-soil-position-score",
+        type=float,
+        default=0.18,
+        help="Puntaje minimo de posicion para aceptar un candidato SOIL.",
+    )
     parser.add_argument("--self-test", action="store_true")
     return parser
 
@@ -1168,6 +1221,8 @@ def main() -> int:
         expected_soil=args.expected_soil,
         expected_white=args.expected_white,
         expected_dark=args.expected_dark,
+        soil_max_position_distance=args.soil_max_position_distance,
+        min_soil_position_score=args.min_soil_position_score,
     )
     (output_dir / "config_usada.json").write_text(
         json.dumps(asdict(config), indent=2, ensure_ascii=False), encoding="utf-8"
