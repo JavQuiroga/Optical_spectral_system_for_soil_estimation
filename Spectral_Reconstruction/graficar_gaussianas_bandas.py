@@ -34,7 +34,9 @@ def gaussian(x: np.ndarray, center: float, fwhm: float) -> np.ndarray:
     return np.exp(-0.5 * ((x - center) / sigma) ** 2)
 
 
-def select_centers(df: pd.DataFrame, center_column: str | None) -> pd.DataFrame:
+def select_centers(df: pd.DataFrame, center_column: str | None, all_bands: bool = False) -> pd.DataFrame:
+    if all_bands:
+        return df.copy()
     if center_column and center_column in df.columns:
         return df[df[center_column].astype(bool)].copy()
     if "distinguishable_center" in df.columns and center_column is None:
@@ -42,9 +44,20 @@ def select_centers(df: pd.DataFrame, center_column: str | None) -> pd.DataFrame:
     return df.copy()
 
 
-def plot_cube(csv_path: Path, output_dir: Path, center_column: str | None, suffix: str, title_label: str) -> None:
+def plot_cube(
+    csv_path: Path,
+    output_dir: Path,
+    center_column: str | None,
+    suffix: str,
+    title_label: str,
+    all_bands: bool = False,
+) -> None:
     df = pd.read_csv(csv_path)
-    centers = select_centers(df, center_column)
+    centers = select_centers(df, center_column, all_bands=all_bands)
+    centers = centers[
+        np.isfinite(centers["wavelength_nm"].to_numpy(dtype=float))
+        & np.isfinite(centers["fwhm_nm"].to_numpy(dtype=float))
+    ].copy()
     if centers.empty:
         return
 
@@ -73,7 +86,7 @@ def plot_cube(csv_path: Path, output_dir: Path, center_column: str | None, suffi
     for i, (_, row) in enumerate(centers.iterrows()):
         y = curves[i]
         label = f"{row['wavelength_nm']:.0f} nm | FWHM {row['fwhm_nm']:.0f} nm"
-        axes[0].plot(x, y, linewidth=0.9, alpha=0.75, label=label)
+        axes[0].plot(x, y, linewidth=0.45 if len(centers) > 100 else 0.9, alpha=0.18 if len(centers) > 100 else 0.75, label=label)
         axes[0].axvline(float(row["wavelength_nm"]), color="black", alpha=0.15, linewidth=0.8)
 
     axes[0].set_title(f"{cube_id} | Gaussianas individuales | {title_label} ({len(centers)})")
@@ -91,16 +104,17 @@ def plot_cube(csv_path: Path, output_dir: Path, center_column: str | None, suffi
         zorder=3,
         label="Centros seleccionados",
     )
-    for _, row in centers.iterrows():
-        axes[1].text(
-            float(row["wavelength_nm"]),
-            1.04,
-            f"{row['wavelength_nm']:.0f}",
-            ha="center",
-            va="bottom",
-            fontsize=6 if len(centers) > 20 else 8,
-            rotation=45,
-        )
+    if len(centers) <= 80:
+        for _, row in centers.iterrows():
+            axes[1].text(
+                float(row["wavelength_nm"]),
+                1.04,
+                f"{row['wavelength_nm']:.0f}",
+                ha="center",
+                va="bottom",
+                fontsize=6 if len(centers) > 20 else 8,
+                rotation=45,
+            )
     axes[1].set_xlabel("Longitud de onda (nm)")
     axes[1].set_ylabel("Suma normalizada")
     axes[1].set_ylim(0, 1.18)
@@ -145,6 +159,11 @@ def main() -> int:
         default="bandas",
         help="Etiqueta descriptiva para el titulo de la grafica.",
     )
+    parser.add_argument(
+        "--all-bands",
+        action="store_true",
+        help="Grafica todas las filas del CSV, ignorando columnas de seleccion.",
+    )
     args = parser.parse_args()
 
     files = sorted(args.input_dir.glob(args.pattern))
@@ -153,7 +172,7 @@ def main() -> int:
         return 2
 
     for csv_path in files:
-        plot_cube(csv_path, args.output_dir, args.center_column, args.suffix, args.title_label)
+        plot_cube(csv_path, args.output_dir, args.center_column, args.suffix, args.title_label, args.all_bands)
         print(f"OK {csv_path.name}")
     print(f"Salida: {args.output_dir}")
     return 0

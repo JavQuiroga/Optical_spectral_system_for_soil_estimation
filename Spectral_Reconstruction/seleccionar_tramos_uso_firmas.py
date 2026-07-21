@@ -386,6 +386,11 @@ def main() -> int:
         default=None,
         help="Carpeta de salida. Por defecto: <input-dir>/recortes_firmas.",
     )
+    parser.add_argument(
+        "--cubos-subdir",
+        default="cubos",
+        help="Subcarpeta dentro de input-dir que contiene */resultado.npz. Ej: cubos o cubos_manuales.",
+    )
     parser.add_argument("--signature-key", default="soil_reflectance")
     parser.add_argument("--margin-bands", type=int, default=35)
     parser.add_argument("--min-core-bands", type=int, default=120)
@@ -402,9 +407,10 @@ def main() -> int:
     )
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    npz_files = sorted((input_dir / "cubos").glob("*/resultado.npz"))
+    cubos_dir = input_dir / args.cubos_subdir
+    npz_files = sorted(cubos_dir.glob("*/resultado.npz"))
     if not npz_files:
-        print(f"No encontre resultado.npz en {input_dir / 'cubos'}")
+        print(f"No encontre resultado.npz en {cubos_dir}")
         return 2
 
     results: list[CropResult] = []
