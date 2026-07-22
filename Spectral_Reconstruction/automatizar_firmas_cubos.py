@@ -71,6 +71,10 @@ class Config:
     interior_fraction: float = 0.35
     circular_roi_radius_fraction: float = 0.22
     soil_roi_radius_pixels: float = 90.0
+    fixed_soil_roi: bool = False
+    anchored_soil_roi: bool = False
+    soil_anchor_search_radius_pixels: float = 80.0
+    soil_anchor_step_pixels: int = 12
     dark_corner_search_fraction: float = 0.30
     dark_rectangle_height_fraction: float = 0.08
     dark_rectangle_width_fraction: float = 0.08
@@ -508,6 +512,106 @@ def make_circular_mask(candidate: Candidate, config: Config, role: str) -> np.nd
     return circle
 
 
+def make_fixed_soil_mask(shape: tuple[int, int], config: Config) -> np.ndarray:
+    if config.expected_soil is None:
+        raise ValueError("Para usar fixed_soil_roi debe existir expected_soil.")
+    height, width = shape
+    expected_x, expected_y = config.expected_soil
+    center_x = expected_x * max(width - 1, 1)
+    center_y = expected_y * max(height - 1, 1)
+    yy, xx = np.indices((height, width))
+    mask = (yy - center_y) ** 2 + (xx - center_x) ** 2 <= float(config.soil_roi_radius_pixels) ** 2
+    if np.count_nonzero(mask) < config.min_roi_pixels:
+        raise ValueError("La ROI fija de SOIL resulto demasiado pequena.")
+    return mask
+
+
+def make_anchored_soil_mask(
+    broadband: np.ndarray, config: Config
+) -> tuple[np.ndarray, dict[str, float | int]]:
+    """Busca una ROI circular de SOIL cerca de expected_soil.
+
+    No deja que SOIL salte a cualquier parte: solo explora una ventana pequeña
+    alrededor del centro esperado. Dentro de esa ventana favorece circulos con
+    contraste frente al anillo exterior, intensidad no extrema y textura baja.
+    """
+
+    if config.expected_soil is None:
+        raise ValueError("Para usar anchored_soil_roi debe existir expected_soil.")
+
+    height, width = broadband.shape
+    expected_x, expected_y = config.expected_soil
+    expected_cx = expected_x * max(width - 1, 1)
+    expected_cy = expected_y * max(height - 1, 1)
+    roi_radius = float(config.soil_roi_radius_pixels)
+    search_radius = float(config.soil_anchor_search_radius_pixels)
+    step = max(1, int(config.soil_anchor_step_pixels))
+
+    yy, xx = np.indices((height, width))
+    best: tuple[float, float, float, dict[str, float | int]] | None = None
+
+    y_min = max(0, int(round(expected_cy - search_radius)))
+    y_max = min(height - 1, int(round(expected_cy + search_radius)))
+    x_min = max(0, int(round(expected_cx - search_radius)))
+    x_max = min(width - 1, int(round(expected_cx + search_radius)))
+
+    y_candidates = sorted(set(list(range(y_min, y_max + 1, step)) + [int(round(expected_cy))]))
+    x_candidates = sorted(set(list(range(x_min, x_max + 1, step)) + [int(round(expected_cx))]))
+
+    for cy in y_candidates:
+        for cx in x_candidates:
+            distance = math.hypot(cx - expected_cx, cy - expected_cy)
+            if distance > search_radius:
+                continue
+
+            circle_distance = np.sqrt((yy - cy) ** 2 + (xx - cx) ** 2)
+            mask = circle_distance <= roi_radius
+            ring = (circle_distance > roi_radius * 1.15) & (circle_distance <= roi_radius * 1.65)
+            if np.count_nonzero(mask) < config.min_roi_pixels or np.count_nonzero(ring) < config.min_roi_pixels:
+                continue
+
+            roi_values = broadband[mask]
+            ring_values = broadband[ring]
+            roi_median = float(np.nanmedian(roi_values))
+            ring_median = float(np.nanmedian(ring_values))
+            roi_std = float(np.nanstd(roi_values))
+
+            contrast_score = float(np.clip(abs(roi_median - ring_median) / 0.25, 0, 1))
+            position_score_value = float(np.clip(1 - distance / max(search_radius, 1e-6), 0, 1))
+            texture_score = float(np.clip(1 - roi_std / 0.20, 0, 1))
+            non_extreme_score = float(np.clip(1 - abs(roi_median - 0.50) / 0.50, 0, 1))
+
+            score = (
+                0.36 * position_score_value
+                + 0.28 * contrast_score
+                + 0.20 * texture_score
+                + 0.16 * non_extreme_score
+            )
+
+            metadata = {
+                "center_x": float(cx),
+                "center_y": float(cy),
+                "expected_center_x": float(expected_cx),
+                "expected_center_y": float(expected_cy),
+                "distance_to_expected_px": float(distance),
+                "radius_px": float(roi_radius),
+                "search_radius_px": float(search_radius),
+                "roi_median": float(roi_median),
+                "ring_median": float(ring_median),
+                "roi_std": float(roi_std),
+                "score": float(score),
+            }
+            if best is None or score > best[0]:
+                best = (score, float(cy), float(cx), metadata)
+
+    if best is None:
+        raise ValueError("No fue posible ubicar la ROI anclada de SOIL.")
+
+    _, cy, cx, metadata = best
+    mask = (yy - cy) ** 2 + (xx - cx) ** 2 <= roi_radius**2
+    return mask, metadata
+
+
 def select_dark_corner_rectangle(
     broadband: np.ndarray, config: Config
 ) -> tuple[np.ndarray, dict[str, int | float | str], float]:
@@ -751,11 +855,21 @@ def evaluate_masks_and_signatures(
     role_scores: dict[str, float],
     config: Config,
 ) -> dict[str, object]:
+    soil_anchor_metadata: dict[str, float | int] | None = None
+    if config.anchored_soil_roi:
+        soil_mask, soil_anchor_metadata = make_anchored_soil_mask(broadband, config)
+    elif config.fixed_soil_roi:
+        soil_mask = make_fixed_soil_mask(broadband.shape, config)
+    else:
+        soil_mask = make_circular_mask(assignment["soil"], config, "soil")
+
     masks = {
-        "soil": make_circular_mask(assignment["soil"], config, "soil"),
+        "soil": soil_mask,
         "white": make_circular_mask(assignment["white"], config, "white"),
     }
     role_scores = dict(role_scores)
+    if config.fixed_soil_roi or config.anchored_soil_roi:
+        role_scores["soil"] = 1.0
     masks["dark"], dark_rectangle, role_scores["dark"] = select_dark_corner_rectangle(
         broadband, config
     )
@@ -801,6 +915,7 @@ def evaluate_masks_and_signatures(
         "status": status,
         "reason": ";".join(reasons),
         "dark_rectangle": dark_rectangle,
+        "soil_anchor": soil_anchor_metadata,
         "role_scores": role_scores,
     }
 
@@ -1222,6 +1337,34 @@ def build_parser() -> argparse.ArgumentParser:
         default=90.0,
         help="Radio fijo, en pixeles, para la ROI circular de SOIL. Por defecto: 90.",
     )
+    parser.add_argument(
+        "--fixed-soil-roi",
+        action="store_true",
+        help=(
+            "Usa una ROI circular fija para SOIL centrada en --expected-soil. "
+            "Recomendado cuando el circulo de suelo esta estable y K-means se equivoca."
+        ),
+    )
+    parser.add_argument(
+        "--anchored-soil-roi",
+        action="store_true",
+        help=(
+            "Usa una ROI circular de SOIL anclada cerca de --expected-soil, "
+            "pero permite moverla dentro de una ventana pequena."
+        ),
+    )
+    parser.add_argument(
+        "--soil-anchor-search-radius-pixels",
+        type=float,
+        default=80.0,
+        help="Radio de busqueda, en pixeles, para mover la ROI anclada de SOIL.",
+    )
+    parser.add_argument(
+        "--soil-anchor-step-pixels",
+        type=int,
+        default=12,
+        help="Paso de busqueda, en pixeles, para la ROI anclada de SOIL.",
+    )
     parser.add_argument("--circle-radius-fraction", type=float, default=0.22)
     parser.add_argument("--dark-search-fraction", type=float, default=0.30)
     parser.add_argument("--dark-height-fraction", type=float, default=0.08)
@@ -1279,6 +1422,10 @@ def main() -> int:
         k_values=(args.clusters,) if args.clusters is not None else args.k_values,
         reduction=args.reduction,
         soil_roi_radius_pixels=args.soil_radius_pixels,
+        fixed_soil_roi=args.fixed_soil_roi,
+        anchored_soil_roi=args.anchored_soil_roi,
+        soil_anchor_search_radius_pixels=args.soil_anchor_search_radius_pixels,
+        soil_anchor_step_pixels=args.soil_anchor_step_pixels,
         circular_roi_radius_fraction=args.circle_radius_fraction,
         dark_corner_search_fraction=args.dark_search_fraction,
         dark_rectangle_height_fraction=args.dark_height_fraction,
