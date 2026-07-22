@@ -83,11 +83,13 @@ class Config:
     min_roi_pixels: int = 30
     reduction: str = "median"
     expected_soil: tuple[float, float] | None = (0.43, 0.55)
-    expected_white: tuple[float, float] | None = None
+    expected_white: tuple[float, float] | None = (0.88, 0.55)
     expected_dark: tuple[float, float] | None = None
     max_position_distance: float = 0.55
     soil_max_position_distance: float = 0.28
+    white_max_position_distance: float = 0.30
     min_soil_position_score: float = 0.18
+    min_white_position_score: float = 0.20
     min_confidence: float = 0.42
     max_invalid_reflectance_fraction: float = 0.20
 
@@ -419,9 +421,12 @@ def candidate_score(
     else:
         intensity_score = 1 - min(abs(brightness_rank - 0.5) * 2, 1)
 
-    position_distance = (
-        config.soil_max_position_distance if role == "soil" else config.max_position_distance
-    )
+    if role == "soil":
+        position_distance = config.soil_max_position_distance
+    elif role == "white":
+        position_distance = config.white_max_position_distance
+    else:
+        position_distance = config.max_position_distance
     position = position_score(candidate, expected, position_distance)
     border = float(np.clip(1 - 2.5 * candidate.border_fraction, 0, 1))
     compactness = float(np.clip(candidate.fill_fraction / 0.55, 0, 1))
@@ -446,6 +451,19 @@ def candidate_score(
             + 0.10 * intensity_score
             + 0.08 * compactness
             + 0.04 * border
+        )
+
+    if role == "white":
+        # WHITE suele estar en el patron claro del lado derecho. Antes bastaba
+        # con ser brillante, y eso permitia escoger reflejos equivocados abajo.
+        # Ahora la posicion pesa casi tanto como la intensidad.
+        return (
+            0.34 * intensity_score
+            + 0.30 * position
+            + 0.10 * border
+            + 0.10 * compactness
+            + 0.10 * roundness
+            + 0.06 * area_score
         )
 
     return (
@@ -488,6 +506,12 @@ def assign_foreground_roles(
             assignment = {"soil": soil, "white": white}
             if not white.brightness > soil.brightness:
                 continue
+            if config.expected_white is not None:
+                white_position = position_score(
+                    white, config.expected_white, config.white_max_position_distance
+                )
+                if white_position < config.min_white_position_score:
+                    continue
 
             scores = {
                 role: candidate_score(
@@ -1114,7 +1138,13 @@ def preview_recipe_quality(
     valida y tamanos de ROI razonables.
     """
 
+    role_scores = evaluated.get("role_scores", {})
     confidence = float(evaluated["confidence"])
+    white_score = (
+        float(role_scores.get("white", confidence))
+        if isinstance(role_scores, dict)
+        else confidence
+    )
     invalid_fraction = float(evaluated["invalid_fraction"])
     outside_fraction = float(evaluated["outside_fraction"])
     roi_sizes = evaluated["roi_sizes"]
@@ -1135,7 +1165,8 @@ def preview_recipe_quality(
 
     status_penalty = 0.25 if evaluated.get("status") == "review" else 0.0
     return float(
-        0.35 * confidence
+        0.25 * confidence
+        + 0.20 * white_score
         + 0.25 * kmeans_score
         + 0.15 * (1 - np.clip(invalid_fraction, 0, 1))
         + 0.10 * (1 - np.clip(outside_fraction, 0, 1))
