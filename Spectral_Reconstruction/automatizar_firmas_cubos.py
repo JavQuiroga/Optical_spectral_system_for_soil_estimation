@@ -32,7 +32,7 @@ import json
 import math
 import sys
 import traceback
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Iterable
 
@@ -59,6 +59,7 @@ class Config:
     preview_start: int | None = 390
     preview_stop: int | None = 679
     preview_ranges: tuple[tuple[int, int], ...] | None = None
+    preview_recipes: tuple[tuple[tuple[int, int], ...], ...] | None = None
     n_subranges: int = 3
     n_clusters: int = 5
     k_values: tuple[int, ...] = (4, 5)
@@ -168,6 +169,28 @@ def parse_range_list(text: str | None) -> tuple[tuple[int, int], ...] | None:
     if not ranges:
         return None
     return tuple(ranges)
+
+
+def parse_recipe_list(text: str | None) -> tuple[tuple[tuple[int, int], ...], ...] | None:
+    """Parsea recetas de rangos separadas por punto y coma.
+
+    Ejemplo:
+        180:320;250:430;390:550;700:820;180:320,250:430
+
+    Cada receta se prueba por separado. Dentro de una receta puede haber uno o
+    varios rangos separados por coma.
+    """
+
+    if text is None or not text.strip():
+        return None
+    recipes: list[tuple[tuple[int, int], ...]] = []
+    for piece in text.split(";"):
+        ranges = parse_range_list(piece)
+        if ranges:
+            recipes.append(ranges)
+    if not recipes:
+        return None
+    return tuple(recipes)
 
 
 def load_cube(path: Path, layout: str) -> np.ndarray:
@@ -1080,6 +1103,75 @@ def save_reflectance_by_k_plot(path: Path, k_results: list[dict[str, object]]) -
     plt.close(fig)
 
 
+def preview_recipe_quality(
+    evaluated: dict[str, object],
+    segmentation_diagnostics: dict[str, object],
+) -> float:
+    """Puntua que tan confiable fue una receta de rangos para un cubo.
+
+    Es una metrica practica de seleccion automatica, no una medicion fisica.
+    Favorece recetas con ROIs confiables, buena segmentacion, reflectancia
+    valida y tamanos de ROI razonables.
+    """
+
+    confidence = float(evaluated["confidence"])
+    invalid_fraction = float(evaluated["invalid_fraction"])
+    outside_fraction = float(evaluated["outside_fraction"])
+    roi_sizes = evaluated["roi_sizes"]
+    if isinstance(roi_sizes, dict) and roi_sizes:
+        roi_balance = min(int(value) for value in roi_sizes.values()) / max(
+            max(int(value) for value in roi_sizes.values()), 1
+        )
+    else:
+        roi_balance = 0.0
+
+    selected_quality = float(segmentation_diagnostics.get("selected_quality", 0.0))
+    kmeans_score = float(np.clip(selected_quality, 0, 1))
+
+    soil_anchor = evaluated.get("soil_anchor")
+    anchor_score = 0.70
+    if isinstance(soil_anchor, dict) and "score" in soil_anchor:
+        anchor_score = float(np.clip(float(soil_anchor["score"]), 0, 1))
+
+    status_penalty = 0.25 if evaluated.get("status") == "review" else 0.0
+    return float(
+        0.35 * confidence
+        + 0.25 * kmeans_score
+        + 0.15 * (1 - np.clip(invalid_fraction, 0, 1))
+        + 0.10 * (1 - np.clip(outside_fraction, 0, 1))
+        + 0.10 * np.clip(roi_balance / 0.08, 0, 1)
+        + 0.05 * anchor_score
+        - status_penalty
+    )
+
+
+def summarize_preview_recipe_attempt(
+    index: int,
+    ranges: tuple[tuple[int, int], ...],
+    preview_range: tuple[int, int],
+    subranges: list[tuple[int, int]],
+    score: float,
+    evaluated: dict[str, object],
+    segmentation_diagnostics: dict[str, object],
+) -> dict[str, object]:
+    return {
+        "recipe_index": int(index),
+        "ranges": [list(item) for item in ranges],
+        "preview_range_start_inclusive_stop_exclusive": list(preview_range),
+        "preview_subranges": [list(item) for item in subranges],
+        "recipe_score": float(score),
+        "selected_k": int(segmentation_diagnostics.get("selected_k", -1)),
+        "selected_quality": float(segmentation_diagnostics.get("selected_quality", 0.0)),
+        "confidence": float(evaluated["confidence"]),
+        "status": str(evaluated["status"]),
+        "reason": str(evaluated["reason"]),
+        "invalid_reflectance_fraction": float(evaluated["invalid_fraction"]),
+        "reflectance_outside_fraction": float(evaluated["outside_fraction"]),
+        "roi_sizes": evaluated["roi_sizes"],
+        "soil_anchor": evaluated.get("soil_anchor"),
+    }
+
+
 def process_cube(
     path: Path,
     input_dir: Path,
@@ -1091,13 +1183,105 @@ def process_cube(
     cube_out.mkdir(parents=True, exist_ok=True)
 
     cube = load_cube(path, config.layout)
-    features, broadband, preview_range, subranges = build_multiband_features(cube, config)
-    labels, candidates, assignment, role_scores, segmentation_diagnostics = choose_best_segmentation(
-        features, broadband, config
-    )
-    evaluated = evaluate_masks_and_signatures(
-        cube, broadband, assignment, dict(role_scores), config
-    )
+    preview_recipe_attempts: list[dict[str, object]] = []
+    selected_recipe_index: int | None = None
+    active_config = config
+
+    if config.preview_recipes:
+        best_recipe: dict[str, object] | None = None
+        for recipe_index, recipe_ranges in enumerate(config.preview_recipes, start=1):
+            recipe_config = replace(config, preview_ranges=recipe_ranges)
+            try:
+                recipe_features, recipe_broadband, recipe_preview_range, recipe_subranges = (
+                    build_multiband_features(cube, recipe_config)
+                )
+                (
+                    recipe_labels,
+                    recipe_candidates,
+                    recipe_assignment,
+                    recipe_role_scores,
+                    recipe_segmentation_diagnostics,
+                ) = choose_best_segmentation(recipe_features, recipe_broadband, recipe_config)
+                recipe_evaluated = evaluate_masks_and_signatures(
+                    cube,
+                    recipe_broadband,
+                    recipe_assignment,
+                    dict(recipe_role_scores),
+                    recipe_config,
+                )
+                recipe_score = preview_recipe_quality(
+                    recipe_evaluated, recipe_segmentation_diagnostics
+                )
+                preview_recipe_attempts.append(
+                    summarize_preview_recipe_attempt(
+                        recipe_index,
+                        recipe_ranges,
+                        recipe_preview_range,
+                        recipe_subranges,
+                        recipe_score,
+                        recipe_evaluated,
+                        recipe_segmentation_diagnostics,
+                    )
+                )
+                if best_recipe is None or recipe_score > float(best_recipe["recipe_score"]):
+                    best_recipe = {
+                        "recipe_index": recipe_index,
+                        "recipe_score": recipe_score,
+                        "config": recipe_config,
+                        "features": recipe_features,
+                        "broadband": recipe_broadband,
+                        "preview_range": recipe_preview_range,
+                        "subranges": recipe_subranges,
+                        "labels": recipe_labels,
+                        "candidates": recipe_candidates,
+                        "assignment": recipe_assignment,
+                        "role_scores": recipe_role_scores,
+                        "segmentation_diagnostics": recipe_segmentation_diagnostics,
+                        "evaluated": recipe_evaluated,
+                    }
+                else:
+                    del recipe_features, recipe_broadband, recipe_labels
+            except Exception as exc:
+                preview_recipe_attempts.append(
+                    {
+                        "recipe_index": int(recipe_index),
+                        "ranges": [list(item) for item in recipe_ranges],
+                        "status": "error",
+                        "error": str(exc),
+                    }
+                )
+
+        if best_recipe is None:
+            raise ValueError("Ninguna receta de preview produjo una segmentacion usable.")
+
+        selected_recipe_index = int(best_recipe["recipe_index"])
+        active_config = best_recipe["config"]  # type: ignore[assignment]
+        features = best_recipe["features"]  # type: ignore[assignment]
+        broadband = best_recipe["broadband"]  # type: ignore[assignment]
+        preview_range = best_recipe["preview_range"]  # type: ignore[assignment]
+        subranges = best_recipe["subranges"]  # type: ignore[assignment]
+        labels = best_recipe["labels"]  # type: ignore[assignment]
+        candidates = best_recipe["candidates"]  # type: ignore[assignment]
+        assignment = best_recipe["assignment"]  # type: ignore[assignment]
+        role_scores = best_recipe["role_scores"]  # type: ignore[assignment]
+        segmentation_diagnostics = best_recipe["segmentation_diagnostics"]  # type: ignore[assignment]
+        evaluated = best_recipe["evaluated"]  # type: ignore[assignment]
+        segmentation_diagnostics = dict(segmentation_diagnostics)
+        segmentation_diagnostics["selected_preview_recipe_index"] = selected_recipe_index
+        segmentation_diagnostics["selected_preview_recipe_score"] = float(
+            best_recipe["recipe_score"]
+        )
+    else:
+        features, broadband, preview_range, subranges = build_multiband_features(
+            cube, config
+        )
+        labels, candidates, assignment, role_scores, segmentation_diagnostics = (
+            choose_best_segmentation(features, broadband, config)
+        )
+        evaluated = evaluate_masks_and_signatures(
+            cube, broadband, assignment, dict(role_scores), config
+        )
+
     role_scores = evaluated["role_scores"]
     masks = evaluated["masks"]
     signatures = evaluated["signatures"]
@@ -1117,7 +1301,7 @@ def process_cube(
         broadband,
         preview_range,
         subranges,
-        config,
+        active_config,
     )
 
     np.savez_compressed(
@@ -1140,6 +1324,8 @@ def process_cube(
         "cube_shape_y_x_lambda": [int(value) for value in cube.shape],
         "preview_range_start_inclusive_stop_exclusive": list(preview_range),
         "preview_subranges": subranges,
+        "selected_preview_recipe_index": selected_recipe_index,
+        "preview_recipe_attempts": preview_recipe_attempts,
         "segmentation": segmentation_diagnostics,
         "per_k_results": [
             {
@@ -1164,7 +1350,7 @@ def process_cube(
         "reason": reason,
         "invalid_reflectance_fraction": invalid_fraction,
         "reflectance_outside_fraction": outside_fraction,
-        "config": asdict(config),
+        "config": asdict(active_config),
     }
     (cube_out / "metadata.json").write_text(
         json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -1313,6 +1499,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--preview-recipes",
+        type=parse_recipe_list,
+        help=(
+            "Recetas de rangos a probar por separado, separadas por punto y coma. "
+            "El script escoge automaticamente la mejor por cubo. "
+            "Ej: 180:320;250:430;390:550;700:820;180:320,250:430. "
+            "Si se usa, tiene prioridad sobre --preview-ranges."
+        ),
+    )
+    parser.add_argument(
         "--n-subranges",
         type=int,
         default=3,
@@ -1417,6 +1613,7 @@ def main() -> int:
         preview_start=args.preview_start,
         preview_stop=args.preview_stop,
         preview_ranges=args.preview_ranges,
+        preview_recipes=args.preview_recipes,
         n_subranges=args.n_subranges,
         n_clusters=args.clusters if args.clusters is not None else args.k_values[0],
         k_values=(args.clusters,) if args.clusters is not None else args.k_values,
