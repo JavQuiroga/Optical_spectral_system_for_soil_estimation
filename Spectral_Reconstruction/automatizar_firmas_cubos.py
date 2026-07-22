@@ -1557,6 +1557,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Valores de K a probar, separados por coma. Por defecto: 4,5.",
     )
     parser.add_argument("--limit", type=int)
+    parser.add_argument(
+        "--random-sample",
+        action="store_true",
+        help=(
+            "Si se usa junto con --limit, escoge cubos al azar en lugar de tomar "
+            "los primeros en orden."
+        ),
+    )
+    parser.add_argument(
+        "--file-random-seed",
+        type=int,
+        default=17,
+        help="Semilla para escoger archivos al azar cuando se usa --random-sample.",
+    )
     parser.add_argument("--reduction", choices=("mean", "median"), default="median")
     parser.add_argument(
         "--soil-radius-pixels",
@@ -1669,6 +1683,9 @@ def main() -> int:
     )
 
     files = discover_cubes(input_dir, args.pattern)
+    if args.random_sample:
+        rng = np.random.default_rng(args.file_random_seed)
+        files = list(rng.permutation(files))
     if args.limit is not None:
         files = files[: args.limit]
     if not files:
