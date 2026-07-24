@@ -1469,6 +1469,8 @@ def write_signature_matrix(output_dir: Path, results: list[CubeResult]) -> None:
     expected_bands: int | None = None
     for result in valid_results:
         result_path = output_dir / "cubos" / result.cube_id / "resultado.npz"
+        if not result_path.exists():
+            continue
         with np.load(result_path) as data:
             signature = data["soil_reflectance"].astype(np.float32)
         if expected_bands is None:
