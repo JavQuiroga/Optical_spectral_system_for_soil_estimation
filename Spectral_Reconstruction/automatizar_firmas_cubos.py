@@ -1425,6 +1425,40 @@ def write_summary(path: Path, results: Iterable[CubeResult]) -> None:
         writer.writerows(rows)
 
 
+def load_existing_summary(path: Path) -> list[CubeResult]:
+    if not path.exists():
+        return []
+    results: list[CubeResult] = []
+    with path.open("r", newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            try:
+                results.append(
+                    CubeResult(
+                        cube_id=str(row["cube_id"]),
+                        input_path=str(row["input_path"]),
+                        status=str(row["status"]),
+                        confidence=float(row["confidence"]),
+                        reason=str(row.get("reason", "")),
+                        shape_y=int(float(row["shape_y"])),
+                        shape_x=int(float(row["shape_x"])),
+                        bands=int(float(row["bands"])),
+                        soil_pixels=int(float(row["soil_pixels"])),
+                        white_pixels=int(float(row["white_pixels"])),
+                        dark_pixels=int(float(row["dark_pixels"])),
+                        invalid_reflectance_fraction=float(
+                            row["invalid_reflectance_fraction"]
+                        ),
+                        reflectance_outside_fraction=float(
+                            row["reflectance_outside_fraction"]
+                        ),
+                    )
+                )
+            except Exception:
+                continue
+    return results
+
+
 def write_signature_matrix(output_dir: Path, results: list[CubeResult]) -> None:
     valid_results = [result for result in results if result.status in {"ok", "review"}]
     if not valid_results:
@@ -1454,6 +1488,11 @@ def write_signature_matrix(output_dir: Path, results: list[CubeResult]) -> None:
 def discover_cubes(input_dir: Path, pattern: str) -> list[Path]:
     files = sorted(path for path in input_dir.rglob(pattern) if path.is_file())
     return files
+
+
+def cube_result_exists(path: Path, input_dir: Path, output_dir: Path) -> bool:
+    cube_id = cube_identifier(path, input_dir)
+    return (output_dir / "cubos" / cube_id / "resultado.npz").exists()
 
 
 def create_synthetic_cube(path: Path, layout: str) -> None:
@@ -1571,6 +1610,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=17,
         help="Semilla para escoger archivos al azar cuando se usa --random-sample.",
     )
+    parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help=(
+            "Omite cubos que ya tengan resultado.npz en output-dir/cubos. "
+            "Util para correr por tandas con --limit sin repetir trabajo."
+        ),
+    )
     parser.add_argument("--reduction", choices=("mean", "median"), default="median")
     parser.add_argument(
         "--soil-radius-pixels",
@@ -1686,21 +1733,49 @@ def main() -> int:
     if args.random_sample:
         rng = np.random.default_rng(args.file_random_seed)
         files = list(rng.permutation(files))
+    total_discovered = len(files)
+    skipped_existing = 0
+    if args.skip_existing:
+        pending_files: list[Path] = []
+        for path in files:
+            if cube_result_exists(path, input_dir, output_dir):
+                skipped_existing += 1
+            else:
+                pending_files.append(path)
+        files = pending_files
     if args.limit is not None:
         files = files[: args.limit]
     if not files:
+        if args.skip_existing and skipped_existing:
+            print(
+                f"No quedan cubos pendientes. Encontrados={total_discovered}, "
+                f"omitidos_por_existentes={skipped_existing}."
+            )
+            return 0
         print(f"No se encontraron archivos '{args.pattern}' dentro de {input_dir}.")
         return 2
 
-    print(f"Cubos encontrados: {len(files)}")
-    results: list[CubeResult] = []
+    if args.skip_existing:
+        print(
+            f"Cubos encontrados: {total_discovered}. "
+            f"Omitidos por existentes: {skipped_existing}. "
+            f"A procesar ahora: {len(files)}."
+        )
+    else:
+        print(f"Cubos encontrados: {len(files)}")
+
+    results: list[CubeResult] = load_existing_summary(output_dir / "resumen.csv")
+    seen_result_ids = {result.cube_id for result in results}
     failures: list[dict[str, str]] = []
 
     for index, path in enumerate(files, start=1):
         print(f"[{index}/{len(files)}] {path}")
         try:
             result = process_cube(path, input_dir, output_dir, config)
+            if result.cube_id in seen_result_ids:
+                results = [item for item in results if item.cube_id != result.cube_id]
             results.append(result)
+            seen_result_ids.add(result.cube_id)
             print(
                 f"  -> {result.status}, confianza={result.confidence:.3f}, "
                 f"invalidas={result.invalid_reflectance_fraction:.1%}"
