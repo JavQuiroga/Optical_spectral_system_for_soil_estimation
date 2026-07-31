@@ -28,29 +28,55 @@ close all;
 % 1. Parametros de entrada/salida
 %% ------------------------------------------------------------
 
-defaultCubePath = fullfile(pwd, 'Spectral_Reconstruction', 'Capturas_soil');
-defaultOutputDir = fullfile(pwd, 'Spectral_Reconstruction', 'Firmas_automaticas');
+scriptDir = fileparts(mfilename('fullpath'));
+defaultCubePath = fullfile(scriptDir, 'Capturas_soil');
+defaultOutputDir = fullfile(scriptDir, 'Firmas_automaticas');
 
-[archivo, carpeta] = uigetfile({'*.npy', 'Cubos NumPy (*.npy)'}, ...
-    'Seleccione el cubo .npy', defaultCubePath);
+% Si quiere iterar rapido, ponga aqui la ruta del cubo y no se abrira uigetfile.
+% Ejemplo:
+% rutaConfig = 'C:\Users\javie\Documents\...\Spectral_Reconstruction\Capturas_soil\Soil_2\cube_20260610_105309.npy';
+rutaConfig = '';
+outputDirConfig = defaultOutputDir;
 
-if isequal(archivo, 0)
-    error('Seleccion cancelada por el usuario.');
+% Deje [] para que pregunte la banda. Ponga un numero para fijarla.
+bandaVistaConfig = [];
+
+% Python usa median por defecto; mean queda disponible para comparar con MATLAB viejo.
+metodoFirma = 'median';  % 'median' o 'mean'
+
+% Opcional: ruta al python.exe del entorno donde tenga numpy/scipy.
+% Ejemplo:
+% pythonCmdConfig = 'C:\Users\javie\anaconda3\envs\TesisEnv\python.exe';
+pythonCmdConfig = '';
+
+if isempty(rutaConfig)
+    [archivo, carpeta] = uigetfile({'*.npy', 'Cubos NumPy (*.npy)'}, ...
+        'Seleccione el cubo .npy', defaultCubePath);
+
+    if isequal(archivo, 0)
+        error('Seleccion cancelada por el usuario.');
+    end
+
+    ruta = fullfile(carpeta, archivo);
+else
+    ruta = rutaConfig;
 end
 
-ruta = fullfile(carpeta, archivo);
+if isempty(outputDirConfig)
+    respuestaSalida = inputdlg( ...
+        {'Carpeta de salida:'}, ...
+        'Salida de firmas manuales', ...
+        [1 80], ...
+        {defaultOutputDir});
 
-respuestaSalida = inputdlg( ...
-    {'Carpeta de salida:'}, ...
-    'Salida de firmas manuales', ...
-    [1 80], ...
-    {defaultOutputDir});
+    if isempty(respuestaSalida)
+        error('Seleccion cancelada por el usuario.');
+    end
 
-if isempty(respuestaSalida)
-    error('Seleccion cancelada por el usuario.');
+    outputDir = respuestaSalida{1};
+else
+    outputDir = outputDirConfig;
 end
-
-outputDir = respuestaSalida{1};
 
 %% ------------------------------------------------------------
 % 2. Cargar cubo .npy
@@ -72,18 +98,22 @@ fprintf('Dimensiones: filas=%d, bandas=%d, columnas=%d\n', nFilas, nBandas, nCol
 % 3. Elegir banda para visualizar ROIs
 %% ------------------------------------------------------------
 
-bandaVistaDefault = min(250, nBandas);
-respuesta = inputdlg( ...
-    {'Banda para visualizar y seleccionar ROIs:'}, ...
-    'Banda de visualizacion', ...
-    [1 45], ...
-    {num2str(bandaVistaDefault)});
+if isempty(bandaVistaConfig)
+    bandaVistaDefault = min(250, nBandas);
+    respuesta = inputdlg( ...
+        {'Banda para visualizar y seleccionar ROIs:'}, ...
+        'Banda de visualizacion', ...
+        [1 45], ...
+        {num2str(bandaVistaDefault)});
 
-if isempty(respuesta)
-    error('Seleccion cancelada por el usuario.');
+    if isempty(respuesta)
+        error('Seleccion cancelada por el usuario.');
+    end
+
+    bandaVista = round(str2double(respuesta{1}));
+else
+    bandaVista = round(bandaVistaConfig);
 end
-
-bandaVista = round(str2double(respuesta{1}));
 
 if isnan(bandaVista) || bandaVista < 1 || bandaVista > nBandas
     error('La banda debe estar entre 1 y %d.', nBandas);
@@ -128,18 +158,26 @@ rois.dark = roiDark;
 % 5. Calcular firmas completas 1:nBandas
 %% ------------------------------------------------------------
 
-fprintf('Calculando firmas medias completas para %d bandas...\n', nBandas);
+fprintf('Calculando firmas completas para %d bandas con metodo %s...\n', nBandas, metodoFirma);
 
-soil_signature = calcularFirmaMedia(cube, maskSoil);
-white_signature = calcularFirmaMedia(cube, maskWhite);
-dark_signature = calcularFirmaMedia(cube, maskDark);
+soil_signature = calcularFirma(cube, maskSoil, metodoFirma);
+white_signature = calcularFirma(cube, maskWhite, metodoFirma);
+dark_signature = calcularFirma(cube, maskDark, metodoFirma);
 
-denominador = white_signature - dark_signature;
-denominador(abs(denominador) < eps) = NaN;
+[soil_reflectance, valid_reflectance] = calcularReflectanciaPythonLike( ...
+    soil_signature, white_signature, dark_signature);
+[white_reflectance, ~] = calcularReflectanciaPythonLike( ...
+    white_signature, white_signature, dark_signature);
+dark_reflectance = zeros(size(dark_signature));
+dark_reflectance(~valid_reflectance) = NaN;
 
-soil_reflectance = (soil_signature - dark_signature) ./ denominador;
-white_reflectance = (white_signature - dark_signature) ./ denominador;
-dark_reflectance = (dark_signature - dark_signature) ./ denominador;
+invalid_reflectance_fraction = 1 - nnz(valid_reflectance) / numel(valid_reflectance);
+finiteReflectance = soil_reflectance(isfinite(soil_reflectance));
+if isempty(finiteReflectance)
+    reflectance_outside_fraction = 1;
+else
+    reflectance_outside_fraction = mean(finiteReflectance < -0.15 | finiteReflectance > 1.5);
+end
 
 % Alias estilo MATLAB anterior.
 firmaSoilRawCompleta = soil_signature;
@@ -175,12 +213,16 @@ save(archivoMat, ...
     'ruta', ...
     'bandasCompletas', ...
     'bandaVista', ...
+    'metodoFirma', ...
     'soil_signature', ...
     'white_signature', ...
     'dark_signature', ...
     'soil_reflectance', ...
     'white_reflectance', ...
     'dark_reflectance', ...
+    'valid_reflectance', ...
+    'invalid_reflectance_fraction', ...
+    'reflectance_outside_fraction', ...
     'firmaSoilRawCompleta', ...
     'firmaWhiteRawCompleta', ...
     'firmaBlackRawCompleta', ...
@@ -216,7 +258,7 @@ try
     preview_manual = imgVista;
     preview_range = [bandaVista, bandaVista + 1];
     preview_subranges = preview_range;
-    guardarResultadoNpz(archivoNpz, ...
+    guardarResultadoNpzMatlabPy(archivoNpz, ...
         soil_signature, ...
         white_signature, ...
         dark_signature, ...
@@ -230,8 +272,26 @@ try
     npzGuardado = true;
 catch ME
     npzError = ME.message;
-    warning('No se pudo guardar resultado.npz desde MATLAB: %s', npzError);
-    warning('El .mat y .csv si fueron guardados. Revise que MATLAB tenga Python + NumPy configurado.');
+    warning('No se pudo guardar resultado.npz con Python embebido de MATLAB: %s', npzError);
+    try
+        guardarResultadoNpzSistema(archivoNpz, scriptDir, pythonCmdConfig, ...
+            soil_signature, ...
+            white_signature, ...
+            dark_signature, ...
+            soil_reflectance, ...
+            maskSoil, ...
+            maskWhite, ...
+            maskDark, ...
+            preview_manual, ...
+            preview_range, ...
+            preview_subranges);
+        npzGuardado = true;
+        npzError = '';
+    catch ME2
+        npzError = ME2.message;
+        warning('No se pudo guardar resultado.npz usando Python por consola: %s', npzError);
+        warning('El .mat y .csv si fueron guardados.');
+    end
 end
 
 metadata = struct();
@@ -241,10 +301,13 @@ metadata.status = 'manual';
 metadata.reason = '';
 metadata.cube_shape_y_lambda_x = [nFilas, nBandas, nColumnas];
 metadata.banda_vista = bandaVista;
+metadata.reduction = metodoFirma;
 metadata.bandas_guardadas = [1, nBandas];
 metadata.soil_pixels = nnz(maskSoil);
 metadata.white_pixels = nnz(maskWhite);
 metadata.dark_pixels = nnz(maskDark);
+metadata.invalid_reflectance_fraction = invalid_reflectance_fraction;
+metadata.reflectance_outside_fraction = reflectance_outside_fraction;
 metadata.resultado_manual_mat = archivoMat;
 metadata.resultado_npz = archivoNpz;
 metadata.resultado_npz_guardado = npzGuardado;
@@ -421,7 +484,7 @@ function cube_id = construirCubeId(ruta)
     end
 end
 
-function guardarResultadoNpz(archivoNpz, soil_signature, white_signature, dark_signature, ...
+function guardarResultadoNpzMatlabPy(archivoNpz, soil_signature, white_signature, dark_signature, ...
     soil_reflectance, maskSoil, maskWhite, maskDark, preview_manual, preview_range, preview_subranges)
 
     np = py.importlib.import_module('numpy');
@@ -455,6 +518,48 @@ function guardarResultadoNpz(archivoNpz, soil_signature, white_signature, dark_s
         'preview', preview_np, ...
         'preview_range', preview_range_np, ...
         'preview_subranges', preview_subranges_np));
+end
+
+function guardarResultadoNpzSistema(archivoNpz, scriptDir, pythonCmdConfig, soil_signature, white_signature, dark_signature, ...
+    soil_reflectance, maskSoil, maskWhite, maskDark, preview_manual, preview_range, preview_subranges)
+
+    helperPath = fullfile(scriptDir, 'crear_npz_manual_desde_mat.py');
+    if ~exist(helperPath, 'file')
+        error('No existe el helper Python: %s', helperPath);
+    end
+
+    tempMat = fullfile(fileparts(archivoNpz), '_tmp_npz_manual.mat');
+    save(tempMat, ...
+        'soil_signature', ...
+        'white_signature', ...
+        'dark_signature', ...
+        'soil_reflectance', ...
+        'maskSoil', ...
+        'maskWhite', ...
+        'maskDark', ...
+        'preview_manual', ...
+        'preview_range', ...
+        'preview_subranges');
+
+    pythonCmd = pythonCmdConfig;
+    if isempty(pythonCmd)
+        pythonCmd = getenv('PYTHON');
+    end
+    if isempty(pythonCmd)
+        pythonCmd = 'python';
+    end
+
+    comando = sprintf('"%s" "%s" --mat "%s" --npz "%s"', ...
+        pythonCmd, helperPath, tempMat, archivoNpz);
+    [status, cmdout] = system(comando);
+
+    if exist(tempMat, 'file')
+        delete(tempMat);
+    end
+
+    if status ~= 0
+        error('Python por consola fallo: %s', cmdout);
+    end
 end
 
 function pos = seleccionarPoligono(nombreRoi)
@@ -494,14 +599,39 @@ function mask = crearMascaraDesdePoligono(pos, nFilas, nColumnas)
     end
 end
 
-function firma = calcularFirmaMedia(cube, mask)
+function firma = calcularFirma(cube, mask, metodo)
     [~, nBandas, ~] = size(cube);
     firma = zeros(1, nBandas);
 
     for k = 1:nBandas
         img = squeeze(cube(:, k, :));
-        firma(k) = mean(double(img(mask)), 'omitnan');
+        pixeles = double(img(mask));
+        switch lower(metodo)
+            case 'median'
+                firma(k) = median(pixeles, 'omitnan');
+            case 'mean'
+                firma(k) = mean(pixeles, 'omitnan');
+            otherwise
+                error('metodoFirma debe ser median o mean.');
+        end
     end
+end
+
+function [reflectance, valid] = calcularReflectanciaPythonLike(soil, white, dark)
+    denominador = white - dark;
+    finiteAbs = abs(denominador(isfinite(denominador)));
+
+    if isempty(finiteAbs)
+        escala = 0;
+    else
+        escala = prctile(finiteAbs, 5);
+    end
+
+    epsilon = max(escala * 0.05, eps('single'));
+    valid = isfinite(denominador) & abs(denominador) > epsilon;
+
+    reflectance = nan(size(soil));
+    reflectance(valid) = (soil(valid) - dark(valid)) ./ denominador(valid);
 end
 
 function mostrarContorno(mask, colorLinea, etiqueta)
