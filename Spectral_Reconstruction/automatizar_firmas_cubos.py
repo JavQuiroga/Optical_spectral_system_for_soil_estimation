@@ -30,6 +30,7 @@ import argparse
 import csv
 import json
 import math
+import re
 import sys
 import traceback
 from dataclasses import asdict, dataclass, replace
@@ -51,6 +52,8 @@ ROLE_COLORS = {
     "white": "#ffffff",
     "dark": "#00b7ff",
 }
+CUBE_ID_PATTERN = re.compile(r"(Soil_\d+__cube_\d+_\d+)")
+SOIL_FOLDER_PATTERN = re.compile(r"^Soil_\d+$", re.IGNORECASE)
 
 
 @dataclass
@@ -60,6 +63,11 @@ class Config:
     preview_stop: int | None = 679
     preview_ranges: tuple[tuple[int, int], ...] | None = None
     preview_recipes: tuple[tuple[tuple[int, int], ...], ...] | None = None
+    auto_preview_scan: bool = False
+    scan_start: int = 120
+    scan_stop: int = 900
+    scan_widths: tuple[int, ...] = (120, 160, 220)
+    scan_step: int = 40
     n_subranges: int = 3
     n_clusters: int = 5
     k_values: tuple[int, ...] = (4, 5)
@@ -147,6 +155,15 @@ def parse_int_list(text: str) -> tuple[int, ...]:
         raise argparse.ArgumentTypeError("Debe indicar al menos un valor de K.")
     if any(value < 2 for value in values):
         raise argparse.ArgumentTypeError("Todos los valores de K deben ser >= 2.")
+    return values
+
+
+def parse_positive_int_list(text: str) -> tuple[int, ...]:
+    values = tuple(int(piece.strip()) for piece in text.split(",") if piece.strip())
+    if not values:
+        raise argparse.ArgumentTypeError("Debe indicar al menos un entero.")
+    if any(value <= 0 for value in values):
+        raise argparse.ArgumentTypeError("Todos los valores deben ser positivos.")
     return values
 
 
@@ -246,6 +263,46 @@ def resolve_all_preview_ranges(n_bands: int, config: Config) -> list[tuple[int, 
             )
         resolved.append((start, stop))
     return resolved
+
+
+def build_scan_preview_recipes(
+    n_bands: int, config: Config
+) -> tuple[tuple[tuple[int, int], ...], ...]:
+    recipes: list[tuple[tuple[int, int], ...]] = []
+    seen: set[tuple[tuple[int, int], ...]] = set()
+
+    if config.preview_recipes:
+        for recipe in config.preview_recipes:
+            clipped: list[tuple[int, int]] = []
+            for start, stop in recipe:
+                start = max(0, start + n_bands if start < 0 else start)
+                stop = min(n_bands, stop + n_bands if stop < 0 else stop)
+                if start < stop:
+                    clipped.append((start, stop))
+            if clipped:
+                key = tuple(clipped)
+                if key not in seen:
+                    seen.add(key)
+                    recipes.append(key)
+
+    if not config.auto_preview_scan:
+        return tuple(recipes)
+
+    scan_start = max(0, config.scan_start)
+    scan_stop = min(n_bands, config.scan_stop)
+    if scan_start >= scan_stop:
+        scan_start, scan_stop = 0, n_bands
+
+    for width in config.scan_widths:
+        if width <= 0:
+            continue
+        for start in range(scan_start, scan_stop - width + 1, max(config.scan_step, 1)):
+            key = ((start, start + width),)
+            if key not in seen:
+                seen.add(key)
+                recipes.append(key)
+
+    return tuple(recipes)
 
 
 def robust_normalize(image: np.ndarray) -> np.ndarray:
@@ -828,6 +885,29 @@ def cube_identifier(path: Path, input_dir: Path) -> str:
     return "__".join(parts)
 
 
+def cube_identifier_candidates(path: Path, input_dir: Path) -> set[str]:
+    """Devuelve IDs plausibles para emparejar .npy con listas de diagnosticos.
+
+    Normalmente el cubo esta como Soil_112/cube_20260708_154031.npy y el
+    diagnostico se llama Soil_112__cube_20260708_154031__score_...
+    """
+
+    ids = {cube_identifier(path, input_dir)}
+    stem = path.with_suffix("").name
+    parent = path.parent.name
+    if parent.lower().startswith("soil_") and stem.startswith("cube_"):
+        ids.add(f"{parent}__{stem}")
+    if stem.startswith("cube_"):
+        for part in reversed(path.parts):
+            if SOIL_FOLDER_PATTERN.match(part):
+                ids.add(f"{part}__{stem}")
+                break
+    text_id = cube_id_from_text(str(path))
+    if text_id is not None:
+        ids.add(text_id)
+    return ids
+
+
 def save_diagnostic(
     path: Path,
     features: np.ndarray,
@@ -1275,11 +1355,17 @@ def process_cube(
     preview_recipe_attempts: list[dict[str, object]] = []
     selected_recipe_index: int | None = None
     active_config = config
+    active_preview_recipes = build_scan_preview_recipes(cube.shape[2], config)
 
-    if config.preview_recipes:
+    if active_preview_recipes:
         best_recipe: dict[str, object] | None = None
-        for recipe_index, recipe_ranges in enumerate(config.preview_recipes, start=1):
-            recipe_config = replace(config, preview_ranges=recipe_ranges)
+        for recipe_index, recipe_ranges in enumerate(active_preview_recipes, start=1):
+            recipe_config = replace(
+                config,
+                preview_ranges=recipe_ranges,
+                preview_recipes=None,
+                auto_preview_scan=False,
+            )
             try:
                 recipe_features, recipe_broadband, recipe_preview_range, recipe_subranges = (
                     build_multiband_features(cube, recipe_config)
@@ -1414,6 +1500,7 @@ def process_cube(
         "preview_range_start_inclusive_stop_exclusive": list(preview_range),
         "preview_subranges": subranges,
         "selected_preview_recipe_index": selected_recipe_index,
+        "num_preview_recipes_evaluated": len(preview_recipe_attempts),
         "preview_recipe_attempts": preview_recipe_attempts,
         "segmentation": segmentation_diagnostics,
         "per_k_results": [
@@ -1550,6 +1637,61 @@ def discover_cubes(input_dir: Path, pattern: str) -> list[Path]:
     return files
 
 
+def cube_id_from_text(text: str) -> str | None:
+    match = CUBE_ID_PATTERN.search(text)
+    return match.group(1) if match else None
+
+
+def load_cube_ids_file(path: Path) -> set[str]:
+    ids: set[str] = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        cube_id = cube_id_from_text(line.strip())
+        if cube_id is not None:
+            ids.add(cube_id)
+    return ids
+
+
+def load_cube_ids_from_qc_dir(path: Path, state: str) -> set[str]:
+    if not path.exists():
+        raise FileNotFoundError(f"No existe la carpeta de control de calidad: {path}")
+
+    candidates = [path]
+    if path.name != state:
+        candidates = [
+            path / state,
+            path / "diagnosticos_por_estado" / state,
+        ]
+
+    folder = next((item for item in candidates if item.exists()), None)
+    if folder is None:
+        raise FileNotFoundError(
+            f"No encontre una carpeta '{state}' dentro de {path}."
+        )
+
+    ids: set[str] = set()
+    for image_path in folder.rglob("*.png"):
+        cube_id = cube_id_from_text(image_path.name)
+        if cube_id is not None:
+            ids.add(cube_id)
+    return ids
+
+
+def filter_files_by_cube_ids(
+    files: list[Path],
+    input_dir: Path,
+    cube_ids: set[str],
+) -> tuple[list[Path], set[str]]:
+    filtered: list[Path] = []
+    found_ids: set[str] = set()
+    for path in files:
+        candidates = cube_identifier_candidates(path, input_dir)
+        matches = candidates & cube_ids
+        if matches:
+            filtered.append(path)
+            found_ids.update(matches)
+    return filtered, cube_ids - found_ids
+
+
 def cube_result_exists(path: Path, input_dir: Path, output_dir: Path) -> bool:
     cube_id = cube_identifier(path, input_dir)
     return (output_dir / "cubos" / cube_id / "resultado.npz").exists()
@@ -1614,6 +1756,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--pattern", default="cube_*.npy")
     parser.add_argument(
+        "--only-cube-ids-file",
+        type=Path,
+        help=(
+            "Procesa solo cubos cuyos IDs aparezcan en este archivo. "
+            "Cada linea puede contener Soil_xxx__cube_fecha_hora o una ruta/nombre que lo incluya."
+        ),
+    )
+    parser.add_argument(
+        "--only-from-qc-dir",
+        type=Path,
+        help=(
+            "Procesa solo cubos listados en una carpeta de control de calidad. "
+            "Puede ser control_calidad_firmas, diagnosticos_por_estado o directamente malas/buenas."
+        ),
+    )
+    parser.add_argument(
+        "--qc-state",
+        default="malas",
+        choices=("buenas", "malas", "revisar"),
+        help="Estado a leer cuando se usa --only-from-qc-dir. Por defecto: malas.",
+    )
+    parser.add_argument(
         "--layout",
         choices=("y_lambda_x", "y_x_lambda"),
         default="y_lambda_x",
@@ -1637,6 +1801,38 @@ def build_parser() -> argparse.ArgumentParser:
             "Ej: 180:320;250:430;390:550;700:820;180:320,250:430. "
             "Si se usa, tiene prioridad sobre --preview-ranges."
         ),
+    )
+    parser.add_argument(
+        "--auto-preview-scan",
+        action="store_true",
+        help=(
+            "Activa un barrido automatico de muchas ventanas espectrales para evitar "
+            "quedarse con una receta fija que no visualiza bien el cubo."
+        ),
+    )
+    parser.add_argument(
+        "--scan-start",
+        type=int,
+        default=120,
+        help="Indice inicial del barrido de preview. Por defecto: 120.",
+    )
+    parser.add_argument(
+        "--scan-stop",
+        type=int,
+        default=900,
+        help="Indice final exclusivo del barrido de preview. Por defecto: 900.",
+    )
+    parser.add_argument(
+        "--scan-widths",
+        type=parse_positive_int_list,
+        default=parse_positive_int_list("120,160,220"),
+        help="Anchos de ventana a probar en el barrido, separados por coma.",
+    )
+    parser.add_argument(
+        "--scan-step",
+        type=int,
+        default=40,
+        help="Paso entre ventanas del barrido. Menor paso = mas preciso pero mas lento.",
     )
     parser.add_argument(
         "--n-subranges",
@@ -1766,6 +1962,11 @@ def main() -> int:
         preview_stop=args.preview_stop,
         preview_ranges=args.preview_ranges,
         preview_recipes=args.preview_recipes,
+        auto_preview_scan=args.auto_preview_scan,
+        scan_start=args.scan_start,
+        scan_stop=args.scan_stop,
+        scan_widths=args.scan_widths,
+        scan_step=args.scan_step,
         n_subranges=args.n_subranges,
         n_clusters=args.clusters if args.clusters is not None else args.k_values[0],
         k_values=(args.clusters,) if args.clusters is not None else args.k_values,
@@ -1790,6 +1991,19 @@ def main() -> int:
     )
 
     files = discover_cubes(input_dir, args.pattern)
+    total_discovered_before_filter = len(files)
+    requested_ids: set[str] = set()
+    if args.only_cube_ids_file is not None:
+        requested_ids.update(load_cube_ids_file(args.only_cube_ids_file.resolve()))
+    if args.only_from_qc_dir is not None:
+        requested_ids.update(
+            load_cube_ids_from_qc_dir(args.only_from_qc_dir.resolve(), args.qc_state)
+        )
+    missing_requested_ids: set[str] = set()
+    if requested_ids:
+        files, missing_requested_ids = filter_files_by_cube_ids(
+            files, input_dir, requested_ids
+        )
     if args.random_sample:
         rng = np.random.default_rng(args.file_random_seed)
         files = list(rng.permutation(files))
@@ -1812,6 +2026,31 @@ def main() -> int:
                 f"omitidos_por_existentes={skipped_existing}."
             )
             return 0
+        if requested_ids:
+            print(
+                f"No se encontraron cubos del filtro dentro de {input_dir}. "
+                f"IDs solicitados={len(requested_ids)}, "
+                f"cubos totales en input={total_discovered_before_filter}."
+            )
+            discovered_path = output_dir / "ids_descubiertos_en_input_ejemplos.txt"
+            discovered_examples: list[str] = []
+            for path in discover_cubes(input_dir, args.pattern)[:200]:
+                discovered_examples.append(
+                    f"{path}\t{';'.join(sorted(cube_identifier_candidates(path, input_dir)))}"
+                )
+            discovered_path.write_text(
+                "\n".join(discovered_examples) + ("\n" if discovered_examples else ""),
+                encoding="utf-8",
+            )
+            print(f"Ejemplos de IDs descubiertos guardados en: {discovered_path}")
+            if missing_requested_ids:
+                missing_path = output_dir / "ids_filtrados_no_encontrados.txt"
+                missing_path.write_text(
+                    "\n".join(sorted(missing_requested_ids)) + "\n",
+                    encoding="utf-8",
+                )
+                print(f"IDs no encontrados guardados en: {missing_path}")
+            return 2
         print(f"No se encontraron archivos '{args.pattern}' dentro de {input_dir}.")
         return 2
 
@@ -1823,6 +2062,20 @@ def main() -> int:
         )
     else:
         print(f"Cubos encontrados: {len(files)}")
+    if requested_ids:
+        print(
+            f"Filtro por IDs: solicitados={len(requested_ids)}, "
+            f"encontrados_en_input={total_discovered}, "
+            f"no_encontrados={len(missing_requested_ids)}, "
+            f"cubos_totales_input={total_discovered_before_filter}."
+        )
+        if missing_requested_ids:
+            missing_path = output_dir / "ids_filtrados_no_encontrados.txt"
+            missing_path.write_text(
+                "\n".join(sorted(missing_requested_ids)) + "\n",
+                encoding="utf-8",
+            )
+            print(f"IDs no encontrados guardados en: {missing_path}")
 
     results: list[CubeResult] = load_existing_summary(output_dir / "resumen.csv")
     seen_result_ids = {result.cube_id for result in results}
