@@ -964,6 +964,7 @@ def evaluate_masks_and_signatures(
         "dark_rectangle": dark_rectangle,
         "soil_anchor": soil_anchor_metadata,
         "role_scores": role_scores,
+        "selected_component_metrics": selected_component_metrics(assignment),
     }
 
 
@@ -1127,6 +1128,60 @@ def save_reflectance_by_k_plot(path: Path, k_results: list[dict[str, object]]) -
     plt.close(fig)
 
 
+def selected_component_metrics(
+    assignment: dict[str, Candidate],
+) -> dict[str, dict[str, float]]:
+    return {
+        role: {
+            "area_fraction": float(candidate.area_fraction),
+            "brightness": float(candidate.brightness),
+            "border_fraction": float(candidate.border_fraction),
+            "fill_fraction": float(candidate.fill_fraction),
+            "centroid_x": float(candidate.centroid_x),
+            "centroid_y": float(candidate.centroid_y),
+        }
+        for role, candidate in assignment.items()
+    }
+
+
+def selection_plausibility_score(evaluated: dict[str, object]) -> float:
+    components = evaluated.get("selected_component_metrics")
+    if not isinstance(components, dict):
+        return 0.65
+
+    soil = components.get("soil")
+    white = components.get("white")
+    if not isinstance(soil, dict) or not isinstance(white, dict):
+        return 0.65
+
+    soil_fill = float(soil.get("fill_fraction", 0.0))
+    soil_border = float(soil.get("border_fraction", 1.0))
+    soil_area = float(soil.get("area_fraction", 0.0))
+    soil_brightness = float(soil.get("brightness", 1.0))
+    white_brightness = float(white.get("brightness", 0.0))
+    white_fill = float(white.get("fill_fraction", 0.0))
+    white_border = float(white.get("border_fraction", 1.0))
+
+    soil_fill_score = float(np.clip((soil_fill - 0.25) / 0.45, 0, 1))
+    soil_border_score = float(1 - np.clip(soil_border / 0.06, 0, 1))
+    soil_area_score = float(1 - np.clip(abs(soil_area - 0.16) / 0.28, 0, 1))
+    soil_brightness_score = float(1 - np.clip((soil_brightness - 0.45) / 0.35, 0, 1))
+    brightness_gap_score = float(np.clip((white_brightness - soil_brightness) / 0.30, 0, 1))
+    white_shape_score = float(
+        0.55 * np.clip(white_fill / 0.55, 0, 1)
+        + 0.45 * (1 - np.clip(white_border / 0.10, 0, 1))
+    )
+
+    return float(
+        0.25 * soil_fill_score
+        + 0.20 * soil_border_score
+        + 0.18 * soil_area_score
+        + 0.15 * soil_brightness_score
+        + 0.14 * brightness_gap_score
+        + 0.08 * white_shape_score
+    )
+
+
 def preview_recipe_quality(
     evaluated: dict[str, object],
     segmentation_diagnostics: dict[str, object],
@@ -1163,14 +1218,16 @@ def preview_recipe_quality(
     if isinstance(soil_anchor, dict) and "score" in soil_anchor:
         anchor_score = float(np.clip(float(soil_anchor["score"]), 0, 1))
 
+    plausibility_score = selection_plausibility_score(evaluated)
     status_penalty = 0.25 if evaluated.get("status") == "review" else 0.0
     return float(
-        0.25 * confidence
-        + 0.20 * white_score
-        + 0.25 * kmeans_score
-        + 0.15 * (1 - np.clip(invalid_fraction, 0, 1))
-        + 0.10 * (1 - np.clip(outside_fraction, 0, 1))
-        + 0.10 * np.clip(roi_balance / 0.08, 0, 1)
+        0.20 * confidence
+        + 0.16 * white_score
+        + 0.20 * kmeans_score
+        + 0.14 * (1 - np.clip(invalid_fraction, 0, 1))
+        + 0.08 * (1 - np.clip(outside_fraction, 0, 1))
+        + 0.08 * np.clip(roi_balance / 0.08, 0, 1)
+        + 0.09 * plausibility_score
         + 0.05 * anchor_score
         - status_penalty
     )
