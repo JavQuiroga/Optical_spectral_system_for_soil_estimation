@@ -1162,9 +1162,9 @@ def selection_plausibility_score(evaluated: dict[str, object]) -> float:
     white_fill = float(white.get("fill_fraction", 0.0))
     white_border = float(white.get("border_fraction", 1.0))
 
-    soil_fill_score = float(np.clip((soil_fill - 0.25) / 0.45, 0, 1))
-    soil_border_score = float(1 - np.clip(soil_border / 0.06, 0, 1))
-    soil_area_score = float(1 - np.clip(abs(soil_area - 0.16) / 0.28, 0, 1))
+    soil_fill_score = float(np.clip((soil_fill - 0.35) / 0.45, 0, 1))
+    soil_border_score = float(1 - np.clip(soil_border / 0.025, 0, 1))
+    soil_area_score = float(1 - np.clip((soil_area - 0.12) / 0.18, 0, 1))
     soil_brightness_score = float(1 - np.clip((soil_brightness - 0.45) / 0.35, 0, 1))
     brightness_gap_score = float(np.clip((white_brightness - soil_brightness) / 0.30, 0, 1))
     white_shape_score = float(
@@ -1173,12 +1173,12 @@ def selection_plausibility_score(evaluated: dict[str, object]) -> float:
     )
 
     return float(
-        0.25 * soil_fill_score
-        + 0.20 * soil_border_score
+        0.24 * soil_fill_score
+        + 0.22 * soil_border_score
         + 0.18 * soil_area_score
-        + 0.15 * soil_brightness_score
+        + 0.16 * soil_brightness_score
         + 0.14 * brightness_gap_score
-        + 0.08 * white_shape_score
+        + 0.06 * white_shape_score
     )
 
 
@@ -1221,13 +1221,13 @@ def preview_recipe_quality(
     plausibility_score = selection_plausibility_score(evaluated)
     status_penalty = 0.25 if evaluated.get("status") == "review" else 0.0
     return float(
-        0.20 * confidence
-        + 0.16 * white_score
-        + 0.20 * kmeans_score
-        + 0.14 * (1 - np.clip(invalid_fraction, 0, 1))
-        + 0.08 * (1 - np.clip(outside_fraction, 0, 1))
-        + 0.08 * np.clip(roi_balance / 0.08, 0, 1)
-        + 0.09 * plausibility_score
+        0.18 * confidence
+        + 0.14 * white_score
+        + 0.28 * kmeans_score
+        + 0.12 * (1 - np.clip(invalid_fraction, 0, 1))
+        + 0.05 * (1 - np.clip(outside_fraction, 0, 1))
+        + 0.06 * np.clip(roi_balance / 0.08, 0, 1)
+        + 0.12 * plausibility_score
         + 0.05 * anchor_score
         - status_penalty
     )
@@ -1255,6 +1255,7 @@ def summarize_preview_recipe_attempt(
         "reason": str(evaluated["reason"]),
         "invalid_reflectance_fraction": float(evaluated["invalid_fraction"]),
         "reflectance_outside_fraction": float(evaluated["outside_fraction"]),
+        "plausibility_score": float(selection_plausibility_score(evaluated)),
         "roi_sizes": evaluated["roi_sizes"],
         "soil_anchor": evaluated.get("soil_anchor"),
     }

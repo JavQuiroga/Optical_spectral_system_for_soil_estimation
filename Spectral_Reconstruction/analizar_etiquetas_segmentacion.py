@@ -154,6 +154,9 @@ def summarize_attempts(row: dict[str, object], metadata: dict[str, object]) -> N
         if int(item.get("recipe_index", -1)) != int(selected_index):
             continue
         row["selected_recipe_confidence"] = safe_float(item.get("confidence"))
+        row["selected_recipe_plausibility_score"] = safe_float(
+            item.get("plausibility_score")
+        )
         row["selected_recipe_invalid_fraction"] = safe_float(
             item.get("invalid_reflectance_fraction")
         )
