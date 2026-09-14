@@ -1,0 +1,5 @@
+Limite maximo de longitud de onda: 1469.0 nm
+Salto minimo requerido: 3 pixel(es)
+Puntos originales validos: 535
+Bandas separables: 89
+Puntos omitidos: 446
